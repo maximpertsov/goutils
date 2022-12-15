@@ -13,3 +13,9 @@ plugins:
     out: dist/js
     opt:
       - service=grpc-web
+  - name: es
+    out: dist/es
+    opt: target=ts
+  - name: connect-web
+    out: dist/es
+    opt: target=ts
