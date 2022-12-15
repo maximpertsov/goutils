@@ -313,7 +313,7 @@ export async function dialWebRTC(
       const status = new Status();
       status.code = Code.UNKNOWN;
       status.message = err;
-      callRequestUpdate.setError(status);
+      callRequestUpdate.update = { case: "error", value: status };
       grpc.unary(SignalingService.CallUpdate, {
         request: callRequestUpdate,
         metadata: {
@@ -337,7 +337,7 @@ export async function dialWebRTC(
       sentDoneOrErrorOnce = true;
       const callRequestUpdate = new CallUpdateRequest();
       callRequestUpdate.uuid = uuid;
-      callRequestUpdate.setDone(true);
+      callRequestUpdate.update = { case: "done", value: true };
       grpc.unary(SignalingService.CallUpdate, {
         request: callRequestUpdate,
         metadata: {
@@ -380,7 +380,7 @@ export async function dialWebRTC(
         const iProto = iceCandidateToProto(event.candidate);
         const callRequestUpdate = new CallUpdateRequest();
         callRequestUpdate.uuid = uuid;
-        callRequestUpdate.setCandidate(iProto);
+        callRequestUpdate.update = { case: "candidate", value: iProto };
         grpc.unary(SignalingService.CallUpdate, {
           request: callRequestUpdate,
           metadata: {
@@ -409,47 +409,50 @@ export async function dialWebRTC(
     client.onMessage(async (message: ProtobufMessage) => {
       const response = message as CallResponse;
 
-      if (response.hasInit()) {
-        if (haveInit) {
-          sendError("got init stage more than once");
-          return;
-        }
-        const init = response.getInit()!;
-        haveInit = true;
-        uuid = response.uuid;
+      switch (response.stage.case) {
+        case "init":
+          if (haveInit) {
+            sendError("got init stage more than once");
+            return;
+          }
+          const init = response.stage.value!;
+          haveInit = true;
+          uuid = response.uuid;
 
-        const remoteSDP = new RTCSessionDescription(
-          JSON.parse(atob(init.getSdp()))
-        );
-        pc.setRemoteDescription(remoteSDP);
+          const remoteSDP = new RTCSessionDescription(
+            JSON.parse(atob(init.sdp))
+          );
+          pc.setRemoteDescription(remoteSDP);
 
-        pResolve(true);
+          pResolve(true);
 
-        if (webrtcOpts?.disableTrickleICE) {
-          exchangeDone = true;
-          sendDone();
+          if (webrtcOpts?.disableTrickleICE) {
+            exchangeDone = true;
+            sendDone();
+            return;
+          }
+          break;
+        case "update":
+          if (!haveInit) {
+            sendError("got update stage before init stage");
+            return;
+          }
+          if (response.uuid !== uuid) {
+            sendError(`uuid mismatch; have=${response.uuid} want=${uuid}`);
+            return;
+          }
+          const update = response.stage.value!;
+          const cand = iceCandidateFromProto(update.candidate!);
+          try {
+            await pc.addIceCandidate(cand);
+          } catch (error) {
+            sendError(JSON.stringify(error));
+            return;
+          }
+          break;
+        default:
+          sendError("unknown CallResponse stage");
           return;
-        }
-      } else if (response.hasUpdate()) {
-        if (!haveInit) {
-          sendError("got update stage before init stage");
-          return;
-        }
-        if (response.uuid !== uuid) {
-          sendError(`uuid mismatch; have=${response.uuid} want=${uuid}`);
-          return;
-        }
-        const update = response.getUpdate()!;
-        const cand = iceCandidateFromProto(update.getCandidate()!);
-        try {
-          await pc.addIceCandidate(cand);
-        } catch (error) {
-          sendError(JSON.stringify(error));
-          return;
-        }
-      } else {
-        sendError("unknown CallResponse stage");
-        return;
       }
     });
 
