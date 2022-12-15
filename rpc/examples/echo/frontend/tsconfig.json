@@ -2,7 +2,7 @@
   "compilerOptions": {
     "alwaysStrict": true,
     "sourceMap": true,
-    "target": "es5",
+    "target": "es6",
     "removeComments": true,
     "noImplicitReturns": true,
     "noImplicitAny": true,
@@ -11,10 +11,11 @@
     "noFallthroughCasesInSwitch": true,
     "noEmitOnError": true,
     "esModuleInterop": true,
+    "moduleResolution": "node",
     "lib": [
-        "es2015",
-        "es2017.object",
-        "dom"
+      "es2015",
+      "es2017.object",
+      "dom"
     ],
     "baseUrl": "./"
   }
