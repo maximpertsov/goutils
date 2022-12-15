@@ -123,13 +123,13 @@ async function makeAuthenticatedTransportFactory(
 
       if (opts?.accessToken != "") {
         const request = new AuthenticateRequest();
-        request.setEntity(
-          opts?.authEntity ? opts.authEntity : address.replace(/^(.*:\/\/)/, "")
-        );
+        request.entity = opts?.authEntity
+          ? opts.authEntity
+          : address.replace(/^(.*:\/\/)/, "");
         const creds = new PBCredentials();
-        creds.setType(opts?.credentials?.type!);
-        creds.setPayload(opts?.credentials?.payload!);
-        request.setCredentials(creds);
+        creds.type = opts?.credentials?.type!;
+        creds.payload = opts?.credentials?.payload!;
+        request.credentials = creds;
 
         let done = new Promise<grpc.Metadata>((resolve, reject) => {
           pResolve = resolve;
@@ -141,7 +141,7 @@ async function makeAuthenticatedTransportFactory(
           host: opts?.externalAuthAddress ? opts.externalAuthAddress : address,
           transport: defaultFactory,
           onMessage: (message: AuthenticateResponse) => {
-            thisAccessToken = message.getAccessToken();
+            thisAccessToken = message.accessToken;
           },
           onEnd: (
             code: grpc.Code,
@@ -173,14 +173,14 @@ async function makeAuthenticatedTransportFactory(
         thisAccessToken = "";
 
         const request = new AuthenticateToRequest();
-        request.setEntity(opts.externalAuthToEntity);
+        request.entity = opts.externalAuthToEntity;
         grpc.invoke(ExternalAuthService.AuthenticateTo, {
           request: request,
           host: opts.externalAuthAddress!,
           transport: defaultFactory,
           metadata: md,
           onMessage: (message: AuthenticateToResponse) => {
-            thisAccessToken = message.getAccessToken();
+            thisAccessToken = message.accessToken;
           },
           onEnd: (
             code: grpc.Code,
@@ -309,10 +309,10 @@ export async function dialWebRTC(
       }
       sentDoneOrErrorOnce = true;
       const callRequestUpdate = new CallUpdateRequest();
-      callRequestUpdate.setUuid(uuid);
+      callRequestUpdate.uuid = uuid;
       const status = new Status();
-      status.setCode(Code.UNKNOWN);
-      status.setMessage(err);
+      status.code = Code.UNKNOWN;
+      status.message = err;
       callRequestUpdate.setError(status);
       grpc.unary(SignalingService.CallUpdate, {
         request: callRequestUpdate,
@@ -336,7 +336,7 @@ export async function dialWebRTC(
       }
       sentDoneOrErrorOnce = true;
       const callRequestUpdate = new CallUpdateRequest();
-      callRequestUpdate.setUuid(uuid);
+      callRequestUpdate.uuid = uuid;
       callRequestUpdate.setDone(true);
       grpc.unary(SignalingService.CallUpdate, {
         request: callRequestUpdate,
@@ -379,7 +379,7 @@ export async function dialWebRTC(
 
         const iProto = iceCandidateToProto(event.candidate);
         const callRequestUpdate = new CallUpdateRequest();
-        callRequestUpdate.setUuid(uuid);
+        callRequestUpdate.uuid = uuid;
         callRequestUpdate.setCandidate(iProto);
         grpc.unary(SignalingService.CallUpdate, {
           request: callRequestUpdate,
@@ -416,7 +416,7 @@ export async function dialWebRTC(
         }
         const init = response.getInit()!;
         haveInit = true;
-        uuid = response.getUuid();
+        uuid = response.uuid;
 
         const remoteSDP = new RTCSessionDescription(
           JSON.parse(atob(init.getSdp()))
@@ -435,8 +435,8 @@ export async function dialWebRTC(
           sendError("got update stage before init stage");
           return;
         }
-        if (response.getUuid() !== uuid) {
-          sendError(`uuid mismatch; have=${response.getUuid()} want=${uuid}`);
+        if (response.uuid !== uuid) {
+          sendError(`uuid mismatch; have=${response.uuid} want=${uuid}`);
           return;
         }
         const update = response.getUpdate()!;
@@ -477,9 +477,9 @@ export async function dialWebRTC(
 
     const callRequest = new CallRequest();
     const encodedSDP = btoa(JSON.stringify(pc.localDescription));
-    callRequest.setSdp(encodedSDP);
+    callRequest.sdp = encodedSDP;
     if (webrtcOpts && webrtcOpts.disableTrickleICE) {
-      callRequest.setDisableTrickle(webrtcOpts.disableTrickleICE);
+      callRequest.disableTrickle = webrtcOpts.disableTrickleICE;
     }
     client.send(callRequest);
 
@@ -511,31 +511,31 @@ export async function dialWebRTC(
 
 function iceCandidateFromProto(i: ICECandidate): RTCIceCandidateInit {
   let candidate: RTCIceCandidateInit = {
-    candidate: i.getCandidate(),
+    candidate: i.candidate,
   };
-  if (i.hasSdpMid()) {
-    candidate.sdpMid = i.getSdpMid();
+  if (i.sdpMid !== null) {
+    candidate.sdpMid = i.sdpMid;
   }
-  if (i.hasSdpmLineIndex()) {
-    candidate.sdpMLineIndex = i.getSdpmLineIndex();
+  if (i.sdpmLineIndex !== null) {
+    candidate.sdpMLineIndex = i.sdpmLineIndex;
   }
-  if (i.hasUsernameFragment()) {
-    candidate.usernameFragment = i.getUsernameFragment();
+  if (i.usernameFragment !== null) {
+    candidate.usernameFragment = i.usernameFragment;
   }
   return candidate;
 }
 
 function iceCandidateToProto(i: RTCIceCandidateInit): ICECandidate {
   let candidate = new ICECandidate();
-  candidate.setCandidate(i.candidate!);
+  candidate.candidate = i.candidate!;
   if (i.sdpMid) {
-    candidate.setSdpMid(i.sdpMid);
+    candidate.sdpMid = i.sdpMid;
   }
   if (i.sdpMLineIndex) {
-    candidate.setSdpmLineIndex(i.sdpMLineIndex);
+    candidate.sdpmLineIndex = i.sdpMLineIndex;
   }
   if (i.usernameFragment) {
-    candidate.setUsernameFragment(i.usernameFragment);
+    candidate.usernameFragment = i.usernameFragment;
   }
   return candidate;
 }
