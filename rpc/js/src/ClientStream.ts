@@ -26,7 +26,7 @@ export class ClientStream extends BaseStream implements grpc.Transport {
   constructor(
     channel: ClientChannel,
     stream: Stream,
-    onDone: (id: number) => void,
+    onDone: (id: bigint) => void,
     opts: grpc.TransportOptions
   ) {
     super(stream, onDone, opts);
@@ -36,8 +36,8 @@ export class ClientStream extends BaseStream implements grpc.Transport {
   public start(metadata: grpc.Metadata) {
     const method = `/${this.opts.methodDefinition.service.serviceName}/${this.opts.methodDefinition.methodName}`;
     const requestHeaders = new RequestHeaders();
-    requestHeaders.setMethod(method);
-    requestHeaders.setMetadata(fromGRPCMetadata(metadata));
+    requestHeaders.method = method;
+    requestHeaders.metadata = fromGRPCMetadata(metadata);
 
     try {
       this.channel.writeHeaders(this.stream, requestHeaders);
@@ -83,11 +83,11 @@ export class ClientStream extends BaseStream implements grpc.Transport {
     try {
       if (!msgBytes || msgBytes.length == 0) {
         const packet = new PacketMessage();
-        packet.setEom(true);
+        packet.eom = true;
         const requestMessage = new RequestMessage();
-        requestMessage.setHasMessage(!!msgBytes);
-        requestMessage.setPacketMessage(packet);
-        requestMessage.setEos(eos);
+        requestMessage.hasMessage = !!msgBytes;
+        requestMessage.packetMessage = packet;
+        requestMessage.eos = eos;
         this.channel.writeMessage(this.stream, requestMessage);
         return;
       }
@@ -98,15 +98,15 @@ export class ClientStream extends BaseStream implements grpc.Transport {
           maxRequestMessagePacketDataSize
         );
         const packet = new PacketMessage();
-        packet.setData(msgBytes.slice(0, amountToSend));
+        packet.data = msgBytes.slice(0, amountToSend);
         msgBytes = msgBytes.slice(amountToSend);
         if (msgBytes.length === 0) {
-          packet.setEom(true);
+          packet.eom = true;
         }
         const requestMessage = new RequestMessage();
-        requestMessage.setHasMessage(!!msgBytes);
-        requestMessage.setPacketMessage(packet);
-        requestMessage.setEos(eos);
+        requestMessage.hasMessage = !!msgBytes;
+        requestMessage.packetMessage = packet;
+        requestMessage.eos = eos;
         this.channel.writeMessage(this.stream, requestMessage);
       }
     } catch (error) {
@@ -116,8 +116,8 @@ export class ClientStream extends BaseStream implements grpc.Transport {
   }
 
   public onResponse(resp: Response) {
-    switch (resp.getTypeCase()) {
-      case Response.TypeCase.HEADERS:
+    switch (resp.type.case) {
+      case "headers":
         if (this.headersReceived) {
           this.closeWithRecvError(new Error("headers already received"));
           return;
@@ -126,9 +126,9 @@ export class ClientStream extends BaseStream implements grpc.Transport {
           this.closeWithRecvError(new Error("headers received after trailers"));
           return;
         }
-        this.processHeaders(resp.getHeaders()!);
+        this.processHeaders(resp.type.value!);
         break;
-      case Response.TypeCase.MESSAGE:
+      case "message":
         if (!this.headersReceived) {
           this.closeWithRecvError(new Error("headers not yet received"));
           return;
@@ -137,24 +137,24 @@ export class ClientStream extends BaseStream implements grpc.Transport {
           this.closeWithRecvError(new Error("headers received after trailers"));
           return;
         }
-        this.processMessage(resp.getMessage()!);
+        this.processMessage(resp.type.value!);
         break;
-      case Response.TypeCase.TRAILERS:
-        this.processTrailers(resp.getTrailers()!);
+      case "trailers":
+        this.processTrailers(resp.type.value!);
         break;
       default:
-        console.error("unknown response type", resp.getTypeCase());
+        console.error("unknown response type", resp.type.case);
         break;
     }
   }
 
   private processHeaders(headers: ResponseHeaders) {
     this.headersReceived = true;
-    this.opts.onHeaders(toGRPCMetadata(headers.getMetadata()), 200);
+    this.opts.onHeaders(toGRPCMetadata(headers.metadata), 200);
   }
 
   private processMessage(msg: ResponseMessage) {
-    const result = super.processPacketMessage(msg.getPacketMessage()!);
+    const result = super.processPacketMessage(msg.packetMessage!);
     if (!result) {
       return;
     }
@@ -166,15 +166,15 @@ export class ClientStream extends BaseStream implements grpc.Transport {
 
   private processTrailers(trailers: ResponseTrailers) {
     this.trailersReceived = true;
-    const headers = toGRPCMetadata(trailers.getMetadata());
+    const headers = toGRPCMetadata(trailers.metadata);
     let statusCode, statusMessage;
-    const status = trailers.getStatus();
+    const status = trailers.status;
     if (status) {
-      statusCode = status.getCode();
-      statusMessage = status.getMessage();
-      headers.set("grpc-status", `${status.getCode()}`);
+      statusCode = status.code;
+      statusMessage = status.message;
+      headers.set("grpc-status", `${status.code}`);
       if (statusMessage !== undefined) {
-        headers.set("grpc-message", status.getMessage());
+        headers.set("grpc-message", status.message);
       }
     } else {
       statusCode = 0;
@@ -230,13 +230,12 @@ const fromGRPCMetadata = (metadata?: grpc.Metadata): Metadata | undefined => {
     return undefined;
   }
   const result = new Metadata();
-  const md = result.getMdMap();
   metadata.forEach((key, values) => {
     const strings = new Strings();
-    strings.setValuesList(values);
-    md.set(key, strings);
+    strings.values = values;
+    result.md[key] = strings;
   });
-  if (result.getMdMap().getLength() === 0) {
+  if (Object.keys(result.md).length === 0) {
     return undefined;
   }
   return result;
@@ -244,12 +243,10 @@ const fromGRPCMetadata = (metadata?: grpc.Metadata): Metadata | undefined => {
 
 const toGRPCMetadata = (metadata?: Metadata): grpc.Metadata => {
   const result = new grpc.Metadata();
-  if (metadata) {
-    metadata
-      .getMdMap()
-      .forEach((entry: any, key: any) =>
-        result.append(key, entry.getValuesList())
-      );
+  if (metadata !== undefined) {
+    for (let [key, strings] of Object.entries(metadata.md)) {
+      result.append(key, strings.values);
+    }
   }
   return result;
 };

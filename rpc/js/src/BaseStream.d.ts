@@ -8,7 +8,7 @@ export declare class BaseStream {
     private readonly packetBuf;
     private packetBufSize;
     private err?;
-    constructor(stream: Stream, onDone: (id: number) => void, opts: grpc.TransportOptions);
+    constructor(stream: Stream, onDone: (id: bigint) => void, opts: grpc.TransportOptions);
     closeWithRecvError(err?: Error): void;
     protected processPacketMessage(msg: PacketMessage): Uint8Array | undefined;
 }

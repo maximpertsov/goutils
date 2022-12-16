@@ -6,7 +6,7 @@ export declare class ClientStream extends BaseStream implements grpc.Transport {
     private readonly channel;
     private headersReceived;
     private trailersReceived;
-    constructor(channel: ClientChannel, stream: Stream, onDone: (id: number) => void, opts: grpc.TransportOptions);
+    constructor(channel: ClientChannel, stream: Stream, onDone: (id: bigint) => void, opts: grpc.TransportOptions);
     start(metadata: grpc.Metadata): void;
     sendMessage(msgBytes?: Uint8Array): void;
     resetStream(): void;
