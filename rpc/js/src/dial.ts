@@ -1,28 +1,29 @@
 import { grpc } from "@improbable-eng/grpc-web";
-import type { ProtobufMessage } from "@improbable-eng/grpc-web/dist/typings/message";
+import {
+  createPromiseClient,
+  createGrpcWebTransport,
+  encodeBinaryHeader,
+  ConnectError,
+} from "@bufbuild/connect-web";
 import { ClientChannel } from "./ClientChannel";
 import { ConnectionClosedError } from "./errors";
 import { Code } from "./gen/google/rpc/code_pb";
 import { Status } from "./gen/google/rpc/status_pb";
 import {
   AuthenticateRequest,
-  AuthenticateResponse,
   AuthenticateToRequest,
-  AuthenticateToResponse,
   Credentials as PBCredentials,
 } from "./gen/proto/rpc/v1/auth_pb";
 import {
   AuthService,
   ExternalAuthService,
-} from "./gen/proto/rpc/v1/auth_pb_service";
+} from "./gen/proto/rpc/v1/auth_connectweb";
 import {
   CallRequest,
-  CallResponse,
   CallUpdateRequest,
-  CallUpdateResponse,
   ICECandidate,
 } from "./gen/proto/rpc/webrtc/v1/signaling_pb";
-import { SignalingService } from "./gen/proto/rpc/webrtc/v1/signaling_pb_service";
+import { SignalingService } from "./gen/proto/rpc/webrtc/v1/signaling_connectweb";
 import { newPeerConnectionForClient } from "./peer";
 
 export interface DialOptions {
@@ -118,9 +119,6 @@ async function makeAuthenticatedTransportFactory(
     if (accessToken == "") {
       let thisAccessToken = "";
 
-      let pResolve: (value: grpc.Metadata) => void;
-      let pReject: (reason?: unknown) => void;
-
       if (opts?.accessToken != "") {
         const request = new AuthenticateRequest();
         request.entity = opts?.authEntity
@@ -131,31 +129,16 @@ async function makeAuthenticatedTransportFactory(
         creds.payload = opts?.credentials?.payload!;
         request.credentials = creds;
 
-        let done = new Promise<grpc.Metadata>((resolve, reject) => {
-          pResolve = resolve;
-          pReject = reject;
-        });
-
-        grpc.invoke(AuthService.Authenticate, {
-          request: request,
-          host: opts?.externalAuthAddress ? opts.externalAuthAddress : address,
-          transport: defaultFactory,
-          onMessage: (message: AuthenticateResponse) => {
-            thisAccessToken = message.accessToken;
-          },
-          onEnd: (
-            code: grpc.Code,
-            msg: string | undefined,
-            _trailers: grpc.Metadata
-          ) => {
-            if (code == grpc.Code.OK) {
-              pResolve(md);
-            } else {
-              pReject(msg);
-            }
-          },
-        });
-        await done;
+        const response = await createPromiseClient(
+          AuthService,
+          // TODO: use default transport?
+          createGrpcWebTransport({
+            baseUrl: opts?.externalAuthAddress
+              ? opts.externalAuthAddress
+              : address,
+          })
+        ).authenticate(request);
+        thisAccessToken = response.accessToken;
       } else {
         thisAccessToken = opts.accessToken;
       }
@@ -163,38 +146,22 @@ async function makeAuthenticatedTransportFactory(
       accessToken = thisAccessToken;
 
       if (opts?.externalAuthAddress && opts?.externalAuthToEntity) {
-        const md = new grpc.Metadata();
-        md.set("authorization", `Bearer ${accessToken}`);
+        const md = new Headers();
+        md.set("authorization", encodeBinaryHeader(`Bearer ${accessToken}`));
 
-        let done = new Promise<grpc.Metadata>((resolve, reject) => {
-          pResolve = resolve;
-          pReject = reject;
-        });
         thisAccessToken = "";
 
         const request = new AuthenticateToRequest();
         request.entity = opts.externalAuthToEntity;
-        grpc.invoke(ExternalAuthService.AuthenticateTo, {
-          request: request,
-          host: opts.externalAuthAddress!,
-          transport: defaultFactory,
-          metadata: md,
-          onMessage: (message: AuthenticateToResponse) => {
-            thisAccessToken = message.accessToken;
-          },
-          onEnd: (
-            code: grpc.Code,
-            msg: string | undefined,
-            _trailers: grpc.Metadata
-          ) => {
-            if (code == grpc.Code.OK) {
-              pResolve(md);
-            } else {
-              pReject(msg);
-            }
-          },
-        });
-        await done;
+
+        const response = await createPromiseClient(
+          ExternalAuthService,
+          // TODO: use default transport?
+          createGrpcWebTransport({
+            baseUrl: opts.externalAuthAddress!,
+          })
+        ).authenticateTo(request, { headers: md });
+        thisAccessToken = response.accessToken;
         accessToken = thisAccessToken;
       }
     }
@@ -294,16 +261,13 @@ export async function dialWebRTC(
       }
     }
 
-    const directTransport = await dialDirect(signalingAddress, optsCopy);
-    const client = grpc.client(SignalingService.Call, {
-      host: signalingAddress,
-      transport: directTransport,
-    });
+    // TODO: use this instead re-instantiating the transport over and over
+    // const directTransport = await dialDirect(signalingAddress, optsCopy);
 
     let uuid = "";
     // only send once since exchange may end or ICE may end
     let sentDoneOrErrorOnce = false;
-    const sendError = (err: string) => {
+    const sendError = async (err: string) => {
       if (sentDoneOrErrorOnce) {
         return;
       }
@@ -314,23 +278,26 @@ export async function dialWebRTC(
       status.code = Code.UNKNOWN;
       status.message = err;
       callRequestUpdate.update = { case: "error", value: status };
-      grpc.unary(SignalingService.CallUpdate, {
-        request: callRequestUpdate,
-        metadata: {
-          "rpc-host": host,
-        },
-        host: signalingAddress,
-        transport: directTransport,
-        onEnd: (output: grpc.UnaryOutput<CallUpdateResponse>) => {
-          const { status, statusMessage, message } = output;
-          if (status === grpc.Code.OK && message) {
-            return;
-          }
-          console.error(statusMessage);
-        },
-      });
+
+      try {
+        const md = new Headers();
+        md.set("rpc-host", encodeBinaryHeader(host));
+        const response = await createPromiseClient(
+          SignalingService,
+          // TODO: use directTransport
+          createGrpcWebTransport({ baseUrl: signalingAddress })
+        ).callUpdate(callRequestUpdate, { headers: md });
+        // TODO: is this required?
+        if (!response.toBinary) {
+          console.error("empty message");
+        }
+      } catch (error) {
+        if (error instanceof ConnectError) {
+          console.error(error.message);
+        }
+      }
     };
-    const sendDone = () => {
+    const sendDone = async () => {
       if (sentDoneOrErrorOnce) {
         return;
       }
@@ -338,27 +305,29 @@ export async function dialWebRTC(
       const callRequestUpdate = new CallUpdateRequest();
       callRequestUpdate.uuid = uuid;
       callRequestUpdate.update = { case: "done", value: true };
-      grpc.unary(SignalingService.CallUpdate, {
-        request: callRequestUpdate,
-        metadata: {
-          "rpc-host": host,
-        },
-        host: signalingAddress,
-        transport: directTransport,
-        onEnd: (output: grpc.UnaryOutput<CallUpdateResponse>) => {
-          const { status, statusMessage, message } = output;
-          if (status === grpc.Code.OK && message) {
-            return;
-          }
-          console.error(statusMessage);
-        },
-      });
+
+      const md = new Headers();
+      md.set("rpc-host", encodeBinaryHeader(host));
+      try {
+        const response = await createPromiseClient(
+          SignalingService,
+          createGrpcWebTransport({ baseUrl: signalingAddress })
+        ).callUpdate(callRequestUpdate, { headers: md });
+        // TODO: is this required?
+        if (!response.toBinary) {
+          console.error("empty message");
+        }
+      } catch (error) {
+        if (error instanceof ConnectError) {
+          console.error(error.message);
+        }
+      }
     };
 
-    let pResolve: (value: unknown) => void;
-    let remoteDescSet = new Promise<unknown>((resolve) => {
-      pResolve = resolve;
-    });
+    // let pResolve: (value: unknown) => void;
+    // let remoteDescSet = new Promise<unknown>((resolve) => {
+    //   pResolve = resolve;
+    // });
     let exchangeDone = false;
     if (!webrtcOpts?.disableTrickleICE) {
       // set up offer
@@ -366,14 +335,15 @@ export async function dialWebRTC(
 
       let iceComplete = false;
       pc.onicecandidate = async (event) => {
-        await remoteDescSet;
+        // TODO: why is this necessary?
+        // await remoteDescSet;
         if (exchangeDone) {
           return;
         }
 
         if (event.candidate === null) {
           iceComplete = true;
-          sendDone();
+          await sendDone();
           return;
         }
 
@@ -381,80 +351,87 @@ export async function dialWebRTC(
         const callRequestUpdate = new CallUpdateRequest();
         callRequestUpdate.uuid = uuid;
         callRequestUpdate.update = { case: "candidate", value: iProto };
-        grpc.unary(SignalingService.CallUpdate, {
-          request: callRequestUpdate,
-          metadata: {
-            "rpc-host": host,
-          },
-          host: signalingAddress,
-          transport: directTransport,
-          onEnd: (output: grpc.UnaryOutput<CallUpdateResponse>) => {
-            const { status, statusMessage, message } = output;
-            if (status === grpc.Code.OK && message) {
-              return;
-            }
-            if (exchangeDone || iceComplete) {
-              return;
-            }
-            console.error("error sending candidate", statusMessage);
-          },
-        });
+
+        const md = new Headers();
+        md.set("rpc-host", encodeBinaryHeader(host));
+        try {
+          const response = await createPromiseClient(
+            SignalingService,
+            createGrpcWebTransport({ baseUrl: signalingAddress })
+          ).callUpdate(callRequestUpdate, { headers: md });
+          if (!response.toBinary && !exchangeDone && !iceComplete) {
+            console.error("error sending candidate");
+          }
+        } catch (error) {
+          if (error instanceof ConnectError && !exchangeDone && !iceComplete) {
+            console.error("error sending candidate", error.message);
+          }
+        }
       };
 
       await pc.setLocalDescription(offerDesc);
     }
 
+    // this client is only for the `call` service
+    const client = createPromiseClient(
+      SignalingService,
+      // use dialdirect / direct transport
+      createGrpcWebTransport({ baseUrl: signalingAddress })
+    );
+
     let haveInit = false;
     // TS says that CallResponse isn't a valid type here. More investigation required.
-    client.onMessage(async (message: ProtobufMessage) => {
-      const response = message as CallResponse;
+    // client.onMessage(async (message: ProtobufMessage) => {
+    //   const response = message as CallResponse;
 
-      switch (response.stage.case) {
-        case "init":
-          if (haveInit) {
-            sendError("got init stage more than once");
-            return;
-          }
-          const init = response.stage.value!;
-          haveInit = true;
-          uuid = response.uuid;
-
-          const remoteSDP = new RTCSessionDescription(
-            JSON.parse(atob(init.sdp))
-          );
-          pc.setRemoteDescription(remoteSDP);
-
-          pResolve(true);
-
-          if (webrtcOpts?.disableTrickleICE) {
-            exchangeDone = true;
-            sendDone();
-            return;
-          }
-          break;
-        case "update":
-          if (!haveInit) {
-            sendError("got update stage before init stage");
-            return;
-          }
-          if (response.uuid !== uuid) {
-            sendError(`uuid mismatch; have=${response.uuid} want=${uuid}`);
-            return;
-          }
-          const update = response.stage.value!;
-          const cand = iceCandidateFromProto(update.candidate!);
-          try {
-            await pc.addIceCandidate(cand);
-          } catch (error) {
-            sendError(JSON.stringify(error));
-            return;
-          }
-          break;
-        default:
-          sendError("unknown CallResponse stage");
-          return;
-      }
-    });
+    // switch (response.stage.case) {
+    //   case "init":
+    //     if (haveInit) {
+    //       await sendError("got init stage more than once");
+    //       return;
+    //     }
+    //     const init = response.stage.value!;
+    //     haveInit = true;
+    //     uuid = response.uuid;
+    //
+    //     const remoteSDP = new RTCSessionDescription(
+    //       JSON.parse(atob(init.sdp))
+    //     );
+    //     pc.setRemoteDescription(remoteSDP);
+    //
+    //     pResolve(true);
+    //
+    //     if (webrtcOpts?.disableTrickleICE) {
+    //       exchangeDone = true;
+    //       await sendDone();
+    //       return;
+    //     }
+    //     break;
+    //   case "update":
+    //     if (!haveInit) {
+    //       await sendError("got update stage before init stage");
+    //       return;
+    //     }
+    //     if (response.uuid !== uuid) {
+    //       await sendError(
+    //         `uuid mismatch; have=${response.uuid} want=${uuid}`
+    //       );
+    //       return;
+    //     }
+    //     const update = response.stage.value!;
+    //     const cand = iceCandidateFromProto(update.candidate!);
+    //     try {
+    //       await pc.addIceCandidate(cand);
+    //     } catch (error) {
+    //       await sendError(JSON.stringify(error));
+    //       return;
+    //     }
+    //     break;
+    //   default:
+    //     await sendError("unknown CallResponse stage");
+    //     return;
+    // }
+    // });
 
     let clientEndResolve: () => void;
     let clientEndReject: (reason?: unknown) => void;
@@ -462,21 +439,21 @@ export async function dialWebRTC(
       clientEndResolve = resolve;
       clientEndReject = reject;
     });
-    client.onEnd(
-      (status: grpc.Code, statusMessage: string, _trailers: grpc.Metadata) => {
-        if (status === grpc.Code.OK) {
-          clientEndResolve();
-          return;
-        }
-        if (statusMessage === "Response closed without headers") {
-          clientEndReject(new ConnectionClosedError("failed to dial"));
-          return;
-        }
-        console.error(statusMessage);
-        clientEndReject(statusMessage);
-      }
-    );
-    client.start({ "rpc-host": host });
+    // client.onEnd(
+    //   (status: grpc.Code, statusMessage: string, _trailers: grpc.Metadata) => {
+    //     if (status === grpc.Code.OK) {
+    //       clientEndResolve();
+    //       return;
+    //     }
+    //     if (statusMessage === "Response closed without headers") {
+    //       clientEndReject(new ConnectionClosedError("failed to dial"));
+    //       return;
+    //     }
+    //     console.error(statusMessage);
+    //     clientEndReject(statusMessage);
+    //   }
+    // );
+    // client.start({ "rpc-host": host });
 
     const callRequest = new CallRequest();
     const encodedSDP = btoa(JSON.stringify(pc.localDescription));
@@ -484,7 +461,70 @@ export async function dialWebRTC(
     if (webrtcOpts && webrtcOpts.disableTrickleICE) {
       callRequest.disableTrickle = webrtcOpts.disableTrickleICE;
     }
-    client.send(callRequest);
+
+    const md = new Headers();
+    md.set("rpc-host", encodeBinaryHeader(host));
+    try {
+      for await (const response of client.call(callRequest)) {
+        // on message
+        switch (response.stage.case) {
+          case "init":
+            if (haveInit) {
+              await sendError("got init stage more than once");
+              break;
+            }
+            const init = response.stage.value!;
+            haveInit = true;
+            uuid = response.uuid;
+
+            const remoteSDP = new RTCSessionDescription(
+              JSON.parse(atob(init.sdp))
+            );
+            pc.setRemoteDescription(remoteSDP);
+
+            // TODO: why is this necessary?
+            // pResolve(true);
+
+            if (webrtcOpts?.disableTrickleICE) {
+              exchangeDone = true;
+              await sendDone();
+              break;
+            }
+            break;
+          case "update":
+            if (!haveInit) {
+              await sendError("got update stage before init stage");
+              break;
+            }
+            if (response.uuid !== uuid) {
+              await sendError(
+                `uuid mismatch; have=${response.uuid} want=${uuid}`
+              );
+              break;
+            }
+            const update = response.stage.value!;
+            const cand = iceCandidateFromProto(update.candidate!);
+            try {
+              await pc.addIceCandidate(cand);
+            } catch (error) {
+              await sendError(JSON.stringify(error));
+              break;
+            }
+            break;
+          default:
+            await sendError("unknown CallResponse stage");
+        }
+      }
+    } catch (error) {
+      if (error instanceof ConnectError) {
+        if (error.message === "Response closed without headers") {
+          throw new ConnectionClosedError("failed to dial");
+        }
+        console.error(error.message);
+      }
+    }
+
+    // client.send(callRequest);
 
     const cc = new ClientChannel(pc, dc);
     cc.ready
@@ -493,7 +533,7 @@ export async function dialWebRTC(
     await clientEnd;
     await cc.ready;
     exchangeDone = true;
-    sendDone();
+    await sendDone();
 
     if (opts?.externalAuthAddress) {
       // TODO(GOUT-11): prepare AuthenticateTo here
