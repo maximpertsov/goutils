@@ -115,6 +115,10 @@ export class ClientStream extends BaseStream implements grpc.Transport {
     }
   }
 
+  public getOpts(): grpc.TransportOptions {
+    return this.opts;
+  }
+
   public onResponse(resp: Response) {
     switch (resp.type.case) {
       case "headers":
