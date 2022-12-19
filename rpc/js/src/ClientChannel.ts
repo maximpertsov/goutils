@@ -13,13 +13,13 @@ import {
 // MaxStreamCount is the max number of streams a channel can have.
 let MaxStreamCount = 256;
 
-interface activeClienStream {
+interface activeClientStream {
   cs: ClientStream;
 }
 
 export class ClientChannel extends BaseChannel {
   private streamIDCounter: bigint = BigInt(0);
-  private readonly streams: Record<number, activeClienStream> = {};
+  private readonly streams: Record<number, activeClientStream> = {};
 
   constructor(pc: RTCPeerConnection, dc: RTCDataChannel) {
     super(pc, dc);
