@@ -1,4 +1,10 @@
 import { grpc } from "@improbable-eng/grpc-web";
+import type {
+  GrpcWebTransportOptions,
+  Transport,
+  UnaryResponse,
+  StreamResponse,
+} from "@bufbuild/connect-web";
 import { BaseStream } from "./BaseStream";
 import type { ClientChannel } from "./ClientChannel";
 import { GRPCError } from "./errors";
@@ -14,11 +20,25 @@ import {
   Stream,
   Strings,
 } from "./gen/proto/rpc/webrtc/v1/grpc_pb";
+import type {
+  AnyMessage,
+  Message,
+  MethodInfo,
+  PartialMessage,
+  ServiceType,
+} from "@bufbuild/protobuf";
+import { MethodKind } from "@bufbuild/protobuf";
 
 // see golang/client_stream.go
 const maxRequestMessagePacketDataSize = 16373;
 
-export class ClientStream extends BaseStream implements grpc.Transport {
+export class ClientStream<
+    I extends Message<I> = AnyMessage,
+    O extends Message<O> = AnyMessage
+  >
+  extends BaseStream
+  implements Transport
+{
   private readonly channel: ClientChannel;
   private headersReceived: boolean = false;
   private trailersReceived: boolean = false;
@@ -27,17 +47,69 @@ export class ClientStream extends BaseStream implements grpc.Transport {
     channel: ClientChannel,
     stream: Stream,
     onDone: (id: bigint) => void,
-    opts: grpc.TransportOptions
+    onEnd: (err?: Error) => void,
+    opts: GrpcWebTransportOptions
   ) {
-    super(stream, onDone, opts);
+    super(stream, onDone, onEnd, opts);
     this.channel = channel;
   }
 
-  public start(metadata: grpc.Metadata) {
-    const method = `/${this.opts.methodDefinition.service.serviceName}/${this.opts.methodDefinition.methodName}`;
+  // PLACEHOLDERS
+
+  public async unary<
+    I extends Message<I> = AnyMessage,
+    O extends Message<O> = AnyMessage
+  >(
+    service: ServiceType,
+    method: MethodInfo<I, O>,
+    _signal: AbortSignal | undefined,
+    _timeoutMs: number | undefined,
+    _header: Headers,
+    _message: PartialMessage<I>
+  ): Promise<UnaryResponse<O>> {
+    return <UnaryResponse<O>>{
+      stream: false,
+      service,
+      method,
+      header: new Headers(),
+      message: method.O.fromBinary(new Uint8Array()),
+      trailer: new Headers(),
+    };
+  }
+
+  public async serverStream<
+    I extends Message<I> = AnyMessage,
+    O extends Message<O> = AnyMessage
+  >(
+    service: ServiceType,
+    method: MethodInfo<I, O>,
+    _signal: AbortSignal | undefined,
+    _timeoutMs: number | undefined,
+    _header: Headers,
+    _message: PartialMessage<I>
+  ): Promise<StreamResponse<O>> {
+    const read = () => new Promise((_resolve, _reject) => {});
+    return <StreamResponse<O>>{
+      stream: true,
+      service,
+      method,
+      header: new Headers(),
+      read,
+      trailer: new Headers(),
+    };
+  }
+
+  // ORIGINAL IMPLEMENTATION of grpc.Transport
+
+  public start(
+    service: ServiceType,
+    methodInfo: MethodInfo<I, O>,
+    headers: Headers
+  ) {
+    const method = `/${service.typeName}/${methodInfo.name}`;
     const requestHeaders = new RequestHeaders();
     requestHeaders.method = method;
-    requestHeaders.metadata = fromGRPCMetadata(metadata);
+    requestHeaders.metadata = fromHeaders(headers);
 
     try {
       this.channel.writeHeaders(this.stream, requestHeaders);
@@ -65,8 +137,8 @@ export class ClientStream extends BaseStream implements grpc.Transport {
     }
   }
 
-  public finishSend() {
-    if (!this.opts.methodDefinition.requestStream) {
+  public finishSend(methodInfo: MethodInfo<I, O>) {
+    if (methodInfo.kind !== MethodKind.ClientStreaming) {
       return;
     }
     this.writeMessage(true, undefined);
@@ -115,10 +187,6 @@ export class ClientStream extends BaseStream implements grpc.Transport {
     }
   }
 
-  public getOpts(): grpc.TransportOptions {
-    return this.opts;
-  }
-
   public onResponse(resp: Response) {
     switch (resp.type.case) {
       case "headers":
@@ -154,7 +222,13 @@ export class ClientStream extends BaseStream implements grpc.Transport {
 
   private processHeaders(headers: ResponseHeaders) {
     this.headersReceived = true;
-    this.opts.onHeaders(toGRPCMetadata(headers.metadata), 200);
+    // this.opts.onHeaders(toHeaders(headers.metadata), 200);
+    this.onHeaders(toHeaders(headers.metadata), 200);
+  }
+
+  // @ts-ignore
+  private onHeaders(headers: Headers, status: number) {
+    // TODO
   }
 
   private processMessage(msg: ResponseMessage) {
@@ -165,12 +239,13 @@ export class ClientStream extends BaseStream implements grpc.Transport {
     const chunk = new ArrayBuffer(result.length + 5);
     new DataView(chunk, 1, 4).setUint32(0, result.length, false);
     new Uint8Array(chunk, 5).set(result);
-    this.opts.onChunk(new Uint8Array(chunk));
+    // this.opts.onChunk(new Uint8Array(chunk));
+    this.onChunk(new Uint8Array(chunk));
   }
 
   private processTrailers(trailers: ResponseTrailers) {
     this.trailersReceived = true;
-    const headers = toGRPCMetadata(trailers.metadata);
+    const headers = toHeaders(trailers.metadata);
     let statusCode, statusMessage;
     const status = trailers.status;
     if (status) {
@@ -191,12 +266,18 @@ export class ClientStream extends BaseStream implements grpc.Transport {
     new DataView(chunk, 0, 1).setUint8(0, 1 << 7);
     new DataView(chunk, 1, 4).setUint32(0, headerBytes.length, false);
     new Uint8Array(chunk, 5).set(headerBytes);
-    this.opts.onChunk(new Uint8Array(chunk));
+    // this.opts.onChunk(new Uint8Array(chunk));
+    this.onChunk(new Uint8Array(chunk));
     if (statusCode === 0) {
       this.closeWithRecvError();
       return;
     }
     this.closeWithRecvError(new GRPCError(statusCode, statusMessage));
+  }
+
+  // @ts-ignore
+  private onChunk(bytes: Uint8Array) {
+    // TODO
   }
 }
 
@@ -220,15 +301,17 @@ function isValidHeaderAscii(val: number): boolean {
   return isAllowedControlChars(val) || (val >= 0x20 && val <= 0x7e);
 }
 
-function headersToBytes(headers: grpc.Metadata): Uint8Array {
+function headersToBytes(headers: Headers): Uint8Array {
   let asString = "";
-  headers.forEach((key, values) => {
-    asString += `${key}: ${values.join(", ")}\r\n`;
+  headers.forEach((values, key) => {
+    // TODO: do we need to call values.toString?
+    asString += `${key}: ${values}\r\n`;
   });
   return encodeASCII(asString);
 }
 
 // from https://github.com/jsmouret/grpc-over-webrtc/blob/45cd6d6cf516e78b1e262ea7aa741bc7a7a93dbc/client-improbable/src/grtc/webrtcclient.ts#L7
+// @ts-ignore
 const fromGRPCMetadata = (metadata?: grpc.Metadata): Metadata | undefined => {
   if (!metadata) {
     return undefined;
@@ -245,11 +328,41 @@ const fromGRPCMetadata = (metadata?: grpc.Metadata): Metadata | undefined => {
   return result;
 };
 
+// @ts-ignore
 const toGRPCMetadata = (metadata?: Metadata): grpc.Metadata => {
   const result = new grpc.Metadata();
   if (metadata !== undefined) {
     for (let [key, strings] of Object.entries(metadata.md)) {
       result.append(key, strings.values);
+    }
+  }
+  return result;
+};
+
+const fromHeaders = (headers?: Headers): Metadata | undefined => {
+  if (!headers) {
+    return undefined;
+  }
+  const result = new Metadata();
+  headers.forEach((key, values) => {
+    if (!(key in result.md)) {
+      result.md[key] = new Strings();
+    }
+    result.md[key]?.values.push(values);
+  });
+  if (Object.keys(result.md).length === 0) {
+    return undefined;
+  }
+  return result;
+};
+
+const toHeaders = (metadata?: Metadata): Headers => {
+  const result = new Headers();
+  if (metadata !== undefined) {
+    for (let [key, strings] of Object.entries(metadata.md)) {
+      for (let value in strings.values) {
+        result.append(key, value);
+      }
     }
   }
   return result;
