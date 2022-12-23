@@ -2,6 +2,7 @@ import type { grpc } from "@improbable-eng/grpc-web";
 import { BaseChannel } from "./BaseChannel";
 import { ClientStream } from "./ClientStream";
 import { ConnectionClosedError } from "./errors";
+import type { Transport, GrpcWebTransportOptions } from "@bufbuild/connect-web";
 import {
   Request,
   RequestHeaders,
@@ -10,20 +11,7 @@ import {
   Response,
   Stream,
 } from "./gen/proto/rpc/webrtc/v1/grpc_pb";
-import type {
-  Transport,
-  // UnaryRequest,
-  UnaryResponse,
-  // StreamResponse,
-  // runUnary,
-} from "@bufbuild/connect-web";
-import type {
-  AnyMessage,
-  Message,
-  MethodInfo,
-  PartialMessage,
-  ServiceType,
-} from "@bufbuild/protobuf";
+
 // MaxStreamCount is the max number of streams a channel can have.
 let MaxStreamCount = 256;
 
@@ -31,7 +19,7 @@ interface activeClientStream {
   cs: ClientStream;
 }
 
-export class ClientChannel extends BaseChannel implements Transport {
+export class ClientChannel extends BaseChannel {
   private streamIDCounter: bigint = BigInt(0);
   private readonly streams: Record<number, activeClientStream> = {};
 
@@ -56,130 +44,6 @@ export class ClientChannel extends BaseChannel implements Transport {
       return this.newStream(this.nextStreamID(), opts);
     };
   }
-
-  public async unary<
-    I extends Message<I> = AnyMessage,
-    O extends Message<O> = AnyMessage
-  >(
-    service: ServiceType,
-    method: MethodInfo<I, O>,
-    _signal: AbortSignal | undefined,
-    _timeoutMs: number | undefined,
-    _header: Headers,
-    _message: PartialMessage<I>
-  ): Promise<UnaryResponse<O>> {
-    // TODO: read from bytes
-    const resp = new Response();
-
-    // TODO: get headers
-    let header = new Headers();
-    if (resp.type.case === "headers") {
-      const metadata = resp.type.value.metadata;
-      if (metadata) {
-        for (const [key, strings] of Object.entries(metadata.md)) {
-          strings.values.forEach((value) => {
-            header.append(key, value);
-          });
-        }
-      }
-    }
-
-    // TODO: get message
-    let message: O = new method.O();
-    if (resp.type.case === "message") {
-      const packetMessage = resp.type.value.packetMessage;
-      if (packetMessage) {
-        message = method.O.fromBinary(packetMessage.data);
-      }
-    }
-
-    // TODO: get trailers
-    let trailer = new Headers();
-    if (resp.type.case === "headers") {
-      const metadata = resp.type.value.metadata;
-      if (metadata) {
-        for (const [key, strings] of Object.entries(metadata.md)) {
-          strings.values.forEach((value) => {
-            trailer.append(key, value);
-          });
-        }
-      }
-    }
-
-    return <UnaryResponse<O>>{
-      stream: resp.stream || false,
-      service,
-      method,
-      // TODO: this might be wrong - what if this isn't a header message?
-      header,
-      // TODO: this might be wrong - what if this isn't a "body" message?
-      message,
-      // TODO: this might be wrong - what if this isn't a trailer message?
-      trailer,
-    };
-  }
-
-  // public async serverStream<
-  //   I extends Message<I> = AnyMessage,
-  //   O extends Message<O> = AnyMessage
-  // >(
-  //   service: ServiceType,
-  //   method: MethodInfo<I, O>,
-  //   _signal: AbortSignal | undefined,
-  //   _timeoutMs: number | undefined,
-  //   _header: Headers,
-  //   _message: PartialMessage<I>
-  // ): Promise<StreamResponse<O>> {
-  //   // TODO: read from bytes
-  //   const resp = new Response();
-  //
-  //   // TODO: get headers
-  //   let header = new Headers();
-  //   if (resp.type.case === "headers") {
-  //     const metadata = resp.type.value.metadata;
-  //     if (metadata) {
-  //       for (const [key, strings] of Object.entries(metadata.md)) {
-  //         strings.values.forEach((value) => {
-  //           header.append(key, value);
-  //         });
-  //       }
-  //     }
-  //   }
-  //
-  //   // TODO: get message
-  //   let message: O = new method.O();
-  //   if (resp.type.case === "message") {
-  //     const packetMessage = resp.type.value.packetMessage;
-  //     if (packetMessage) {
-  //       message = method.O.fromBinary(packetMessage.data);
-  //     }
-  //   }
-  //
-  //   // TODO: get trailers
-  //   let trailer = new Headers();
-  //   if (resp.type.case === "headers") {
-  //     const metadata = resp.type.value.metadata;
-  //     if (metadata) {
-  //       for (const [key, strings] of Object.entries(metadata.md)) {
-  //         strings.values.forEach((value) => {
-  //           trailer.append(key, value);
-  //         });
-  //       }
-  //     }
-  //   }
-  //
-  //   return <StreamResponse<O>>{
-  //     stream: resp.stream || false,
-  //     service,
-  //     method,
-  //     // TODO: this might be wrong - what if this isn't a header message?
-  //     header,
-  //     // TODO: this might be wrong - what if this isn't a "body" message?
-  //     message,
-  //     // TODO: this might be wrong - what if this isn't a trailer message?
-  //     trailer,
-  //   };
-  // }
 
   private onConnectionTerminated() {
     // we may call this twice but we know closed will be true at this point.
@@ -223,8 +87,8 @@ export class ClientChannel extends BaseChannel implements Transport {
 
   private newStream(
     stream: Stream,
-    opts: grpc.TransportOptions
-  ): grpc.Transport {
+    opts: GrpcWebTransportOptions
+  ): Transport {
     if (this.isClosed()) {
       return new FailingClientStream(
         new ConnectionClosedError("connection closed"),
@@ -240,6 +104,7 @@ export class ClientChannel extends BaseChannel implements Transport {
         this,
         stream,
         (id: bigint) => this.removeStreamByID(id),
+        () => {},
         opts
       );
       activeStream = { cs: clientStream };
@@ -274,7 +139,7 @@ export class ClientChannel extends BaseChannel implements Transport {
   }
 }
 
-class FailingClientStream implements grpc.Transport {
+class FailingClientStream implements Transport {
   private readonly err: Error;
   private readonly opts: grpc.TransportOptions;
 
@@ -294,4 +159,5 @@ class FailingClientStream implements grpc.Transport {
   public finishSend() {}
 
   public cancel() {}
+
 }
