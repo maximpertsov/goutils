@@ -29,6 +29,11 @@ import (
 	rpcpb "go.viam.com/utils/proto/rpc/v1"
 )
 
+// create a new TLS config with the default options for RPC.
+func newDefaultTLSConfig() *tls.Config {
+	return &tls.Config{MinVersion: tls.VersionTLS12}
+}
+
 // A Dialer is responsible for making connections to gRPC endpoints.
 type Dialer interface {
 	// DialDirect makes a connection to the given target over standard gRPC with the supplied options.
@@ -135,9 +140,15 @@ func (cd *cachedDialer) DialFunc(
 
 func (cd *cachedDialer) Close() error {
 	cd.mu.Lock()
-	defer cd.mu.Unlock()
-	var err error
+	// need a copy of cd.conns as we can't hold the lock, since .Close() fires the onUnref() set (above) in DialFunc()
+	// that uses the same lock and directly modifies cd.conns when the dialer is reused at different layers (e.g. auth and multi)
+	var conns []*refCountedConnWrapper
 	for _, c := range cd.conns {
+		conns = append(conns, c)
+	}
+	cd.mu.Unlock()
+	var err error
+	for _, c := range conns {
 		if closeErr := c.actual.Close(); closeErr != nil && status.Convert(closeErr).Code() != codes.Canceled {
 			err = multierr.Combine(err, closeErr)
 		}
@@ -226,7 +237,7 @@ func dialDirectGRPC(ctx context.Context, address string, dOpts *dialOptions, log
 	} else {
 		tlsConfig := dOpts.tlsConfig
 		if tlsConfig == nil {
-			tlsConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+			tlsConfig = newDefaultTLSConfig()
 		}
 
 		var downgrade bool
@@ -282,12 +293,19 @@ func dialDirectGRPC(ctx context.Context, address string, dOpts *dialOptions, log
 	var connPtr *ClientConn
 	var closeCredsFunc func() error
 	var rpcCreds *perRPCJWTCredentials
-	if dOpts.creds.Type != "" {
+
+	if dOpts.authMaterial != "" {
+		dialOpts = append(dialOpts, grpc.WithPerRPCCredentials(&staticPerRPCJWTCredentials{dOpts.authMaterial}))
+	} else if dOpts.creds.Type != "" || dOpts.externalAuthMaterial != "" {
 		rpcCreds = &perRPCJWTCredentials{
 			entity: dOpts.authEntity,
 			creds:  dOpts.creds,
 			debug:  dOpts.debug,
 			logger: logger,
+			// Note: don't set dialOptsCopy.authMaterial below as perRPCJWTCredentials will know to use
+			// its externalAccessToken to authenticateTo. This will result in both a connection level authorization
+			// added as well as an authorization header added from perRPCJWTCredentials, resulting in a failure.
+			externalAuthMaterial: dOpts.externalAuthMaterial,
 		}
 		if dOpts.debug {
 			logger.Debugw("will eventually authenticate as entity", "entity", dOpts.authEntity)
@@ -302,11 +320,18 @@ func dialDirectGRPC(ctx context.Context, address string, dOpts *dialOptions, log
 			dialOptsCopy := *dOpts
 			dialOptsCopy.insecure = dOpts.externalAuthInsecure
 			dialOptsCopy.externalAuthAddr = ""
+			dialOptsCopy.externalAuthMaterial = ""
 			dialOptsCopy.creds = Credentials{}
+			dialOptsCopy.authEntity = ""
+
+			// reset the tls config that is used for the external Auth Service.
+			dialOptsCopy.tlsConfig = newDefaultTLSConfig()
+
 			externalConn, externalCached, err := dialDirectGRPC(ctx, dOpts.externalAuthAddr, &dialOptsCopy, logger)
 			if err != nil {
 				return nil, false, err
 			}
+
 			if dOpts.debug {
 				if externalCached {
 					logger.Debugw("connected directly for external auth (cached)", "address", dOpts.externalAuthAddr)
@@ -322,9 +347,7 @@ func dialDirectGRPC(ctx context.Context, address string, dOpts *dialOptions, log
 		}
 		dialOpts = append(dialOpts, grpc.WithPerRPCCredentials(rpcCreds))
 	}
-	if dOpts.authMaterial != "" {
-		dialOpts = append(dialOpts, grpc.WithPerRPCCredentials(&staticPerRPCJWTCredentials{dOpts.authMaterial}))
-	}
+
 	var conn ClientConn
 	var cached bool
 	var err error
@@ -372,6 +395,9 @@ func buildKeyExtra(opts *dialOptions) string {
 	if opts.externalAuthToEntity != "" {
 		hasher.Write([]byte(opts.externalAuthToEntity))
 	}
+	if opts.externalAuthMaterial != "" {
+		hasher.Write([]byte(opts.externalAuthMaterial))
+	}
 	if opts.webrtcOpts.SignalingServerAddress != "" {
 		hasher.Write([]byte(opts.webrtcOpts.SignalingServerAddress))
 	}
@@ -380,6 +406,9 @@ func buildKeyExtra(opts *dialOptions) string {
 	}
 	if opts.webrtcOpts.SignalingExternalAuthToEntity != "" {
 		hasher.Write([]byte(opts.webrtcOpts.SignalingExternalAuthToEntity))
+	}
+	if opts.webrtcOpts.SignalingExternalAuthAuthMaterial != "" {
+		hasher.Write([]byte(opts.webrtcOpts.SignalingExternalAuthAuthMaterial))
 	}
 	if opts.webrtcOpts.SignalingCreds.Type != "" {
 		hasher.Write([]byte(opts.webrtcOpts.SignalingCreds.Type))
@@ -462,6 +491,8 @@ type perRPCJWTCredentials struct {
 	externalAuthToEntity string
 	creds                Credentials
 	accessToken          string
+	// The static external auth material used against the AuthenticateTo request to obtain final accessToken
+	externalAuthMaterial string
 
 	debug  bool
 	logger golog.Logger
@@ -492,21 +523,28 @@ func (creds *perRPCJWTCredentials) authenticate(ctx context.Context) (string, er
 		defer creds.mu.Unlock()
 		accessToken = creds.accessToken
 		if accessToken == "" {
-			if creds.debug {
-				creds.logger.Debugw("authenticating as entity", "entity", creds.entity)
+			// skip authenticate call when a static access token for the external auth is used.
+			if creds.externalAuthMaterial == "" {
+				if creds.debug {
+					creds.logger.Debugw("authenticating as entity", "entity", creds.entity)
+				}
+				authClient := rpcpb.NewAuthServiceClient(creds.conn)
+
+				// Check external auth creds...
+				resp, err := authClient.Authenticate(ctx, &rpcpb.AuthenticateRequest{
+					Entity: creds.entity,
+					Credentials: &rpcpb.Credentials{
+						Type:    string(creds.creds.Type),
+						Payload: creds.creds.Payload,
+					},
+				})
+				if err != nil {
+					return "", err
+				}
+				accessToken = resp.AccessToken
+			} else {
+				accessToken = creds.externalAuthMaterial
 			}
-			authClient := rpcpb.NewAuthServiceClient(creds.conn)
-			resp, err := authClient.Authenticate(ctx, &rpcpb.AuthenticateRequest{
-				Entity: creds.entity,
-				Credentials: &rpcpb.Credentials{
-					Type:    string(creds.creds.Type),
-					Payload: creds.creds.Payload,
-				},
-			})
-			if err != nil {
-				return "", err
-			}
-			accessToken = resp.AccessToken
 
 			// now perform external auth
 			if creds.externalAuthToEntity == "" {

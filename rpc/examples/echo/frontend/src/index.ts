@@ -20,48 +20,53 @@ import { EchoService } from "./gen/proto/rpc/examples/echo/v1/echo_connectweb";
 const thisHost = `${window.location.protocol}//${window.location.host}`;
 
 declare global {
-  interface Window {
-    webrtcHost: string;
-    creds?: Credentials;
-    externalAuthAddr?: string;
-    externalAuthToEntity?: string;
-  }
+	interface Window {
+		webrtcHost: string;
+		creds?: Credentials;
+		externalAuthAddr?: string;
+		externalAuthToEntity?: string;
+		accessToken?: string;
+	}
 }
 
 async function getClients() {
-  const webrtcHost = window.webrtcHost;
-  // const opts: DialOptions = {
-  //   credentials: window.creds,
-  //   externalAuthAddress: window.externalAuthAddr,
-  //   externalAuthToEntity: window.externalAuthToEntity,
-  //   webrtcOptions: {
-  //     disableTrickleICE: false,
-  //     signalingCredentials: window.creds,
-  //   },
-  // };
-  // if (opts.externalAuthAddress) {
-  //   // we are authenticating against the external address and then
-  //   // we will authenticate for externalAuthToEntity.
-  //   opts.authEntity = opts.externalAuthAddress.replace(/^(.*:\/\/)/, "");
-  //
-  //   // do similar for WebRTC
-  //   opts.webrtcOptions!.signalingExternalAuthAddress = opts.externalAuthAddress;
-  //   opts.webrtcOptions!.signalingExternalAuthToEntity =
-  //     opts.externalAuthToEntity;
-  // }
-  // console.log("WebRTC");
-  // const webRTCConn = await dialWebRTC(thisHost, webrtcHost, opts);
-  // const webrtcClient = new EchoService(webrtcHost, {
-  //   transport: webRTCConn.transportFactory,
-  // });
-  // await doEchos(webrtcClient);
+	const webrtcHost = window.webrtcHost;
+	const opts: DialOptions = {
+		externalAuthAddress: window.externalAuthAddr,
+		externalAuthToEntity: window.externalAuthToEntity,
+		webrtcOptions: {
+			disableTrickleICE: false,
+		}
+	};
 
-  console.log("Direct"); // bi-di may not work
-  // const directTransport = await dialDirect(thisHost, opts);
-  // TODO: remove and implement in dialDirect
-  const tranport = createGrpcWebTransport({ baseUrl: thisHost });
-  const directClient = createPromiseClient(EchoService, tranport);
-  await doEchos(directClient);
+	if (!window.accessToken) {
+		opts.credentials = window.creds;
+		opts.webrtcOptions!.signalingCredentials = window.creds;
+	} else {
+		opts.accessToken = window.accessToken;
+	}
+
+	if (opts.externalAuthAddress) {
+		if (!window.accessToken) {
+			// we are authenticating against the external address and then
+			// we will authenticate for externalAuthToEntity.
+			opts.authEntity = opts.externalAuthAddress.replace(/^(.*:\/\/)/, '');
+		}
+
+		// do similar for WebRTC
+		opts.webrtcOptions!.signalingExternalAuthAddress = opts.externalAuthAddress;
+		opts.webrtcOptions!.signalingExternalAuthToEntity = opts.externalAuthToEntity;
+	}
+
+	console.log("WebRTC")
+	const webRTCConn = await dialWebRTC(thisHost, webrtcHost, opts);
+	const webrtcClient = new EchoServiceClient(webrtcHost, { transport: webRTCConn.transportFactory });
+	await doEchos(webrtcClient);
+
+	console.log("Direct") // bi-di may not work
+	const directTransport = await dialDirect(thisHost, opts);
+	const directClient = new EchoServiceClient(thisHost, { transport: directTransport });
+	await doEchos(directClient);
 }
 
 getClients();

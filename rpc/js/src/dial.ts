@@ -89,17 +89,18 @@ export async function dialDirect(
     return grpc.CrossBrowserHttpTransport({ withCredentials: false })(opts);
   };
 
-  // Client already has access token with no external auth, skip Authenticate process.
-  if (
-    opts?.accessToken &&
-    !(opts?.externalAuthAddress && opts?.externalAuthToEntity)
-  ) {
-    const md = new grpc.Metadata();
-    md.set("authorization", `Bearer ${opts.accessToken}`);
-    return (opts: grpc.TransportOptions): grpc.Transport => {
-      return new authenticatedTransport(opts, defaultFactory, md);
-    };
-  }
+	// Client already has access token with no external auth, skip Authenticate process.
+	if (opts?.accessToken && !(opts?.externalAuthAddress && opts?.externalAuthToEntity)) {
+		const md = new grpc.Metadata();
+		md.set("authorization", `Bearer ${opts.accessToken}`);
+		return (opts: grpc.TransportOptions): grpc.Transport => {
+			return new authenticatedTransport(opts, defaultFactory, md);
+		};
+	}
+	
+	if (!opts || (!opts?.credentials && !opts?.accessToken)) {
+		return defaultFactory;
+	}
 
   if (!opts?.credentials) {
     return defaultFactory;
@@ -108,16 +109,12 @@ export async function dialDirect(
   return makeAuthenticatedTransportFactory(address, defaultFactory, opts);
 }
 
-async function makeAuthenticatedTransportFactory(
-  address: string,
-  defaultFactory: grpc.TransportFactory,
-  opts?: DialOptions
-): Promise<grpc.TransportFactory> {
-  let accessToken = "";
-  const getExtraMetadata = async (): Promise<grpc.Metadata> => {
-    // TODO(GOUT-10): handle expiration
-    if (accessToken == "") {
-      let thisAccessToken = "";
+async function makeAuthenticatedTransportFactory(address: string, defaultFactory: grpc.TransportFactory, opts: DialOptions): Promise<grpc.TransportFactory> {
+	let accessToken = "";
+	const getExtraMetadata = async (): Promise<grpc.Metadata> => {
+		// TODO(GOUT-10): handle expiration
+		if (accessToken == "") {
+			let thisAccessToken = "";
 
       if (opts?.accessToken != "") {
         const request = new AuthenticateRequest();
@@ -129,30 +126,41 @@ async function makeAuthenticatedTransportFactory(
         creds.payload = opts?.credentials?.payload!;
         request.credentials = creds;
 
-        const response = await createPromiseClient(
-          AuthService,
-          // TODO: use default transport?
-          createGrpcWebTransport({
-            baseUrl: opts?.externalAuthAddress
-              ? opts.externalAuthAddress
-              : address,
-          })
-        ).authenticate(request);
-        thisAccessToken = response.accessToken;
-      } else {
-        thisAccessToken = opts.accessToken;
-      }
+			if (!opts.accessToken || opts.accessToken === "") {
+				const request = new AuthenticateRequest();
+				request.setEntity(opts.authEntity ? opts.authEntity : address.replace(/^(.*:\/\/)/, ''));
+				const creds = new PBCredentials();
+				creds.setType(opts.credentials?.type!);
+				creds.setPayload(opts.credentials?.payload!);
+				request.setCredentials(creds);
 
       accessToken = thisAccessToken;
 
-      if (opts?.externalAuthAddress && opts?.externalAuthToEntity) {
-        const md = new Headers();
-        md.set("authorization", encodeBinaryHeader(`Bearer ${accessToken}`));
+				grpc.invoke(AuthService.Authenticate, {
+					request: request,
+					host: opts.externalAuthAddress ? opts.externalAuthAddress : address,
+					transport: defaultFactory,
+					onMessage: (message: AuthenticateResponse) => {
+						thisAccessToken = message.getAccessToken();
+					},
+					onEnd: (code: grpc.Code, msg: string | undefined, _trailers: grpc.Metadata) => {
+						if (code == grpc.Code.OK) {
+							pResolve(md);
+						} else {
+							pReject(msg);
+						}
+					}
+				});
+				await done;
+			} else {
+				thisAccessToken = opts.accessToken;
+			}
 
         thisAccessToken = "";
 
-        const request = new AuthenticateToRequest();
-        request.entity = opts.externalAuthToEntity;
+			if (opts.externalAuthAddress && opts.externalAuthToEntity) {
+				const md = new grpc.Metadata();
+				md.set("authorization", `Bearer ${accessToken}`);
 
         const response = await createPromiseClient(
           ExternalAuthService,
@@ -240,26 +248,22 @@ export async function dialWebRTC(
     if (opts) {
       optsCopy = { ...opts } as DialOptions;
 
-      if (!opts.accessToken) {
-        optsCopy.authEntity = opts?.webrtcOptions?.signalingAuthEntity;
-        if (!optsCopy.authEntity) {
-          if (optsCopy.externalAuthAddress) {
-            optsCopy.authEntity = opts.externalAuthAddress?.replace(
-              /^(.*:\/\/)/,
-              ""
-            );
-          } else {
-            optsCopy.authEntity = signalingAddress.replace(/^(.*:\/\/)/, "");
-          }
-        }
-        optsCopy.credentials = opts?.webrtcOptions?.signalingCredentials;
-        optsCopy.externalAuthAddress =
-          opts?.webrtcOptions?.signalingExternalAuthAddress;
-        optsCopy.externalAuthToEntity =
-          opts?.webrtcOptions?.signalingExternalAuthToEntity;
-        optsCopy.accessToken = opts?.webrtcOptions?.signalingAccessToken;
-      }
-    }
+			if (!opts.accessToken) {
+				optsCopy.authEntity = opts?.webrtcOptions?.signalingAuthEntity;
+				if (!optsCopy.authEntity) {
+					if (optsCopy.externalAuthAddress) {
+						optsCopy.authEntity = opts.externalAuthAddress?.replace(/^(.*:\/\/)/, '');
+					} else {
+						optsCopy.authEntity = signalingAddress.replace(/^(.*:\/\/)/, '');
+					}
+				}
+				optsCopy.credentials = opts?.webrtcOptions?.signalingCredentials;
+				optsCopy.accessToken = opts?.webrtcOptions?.signalingAccessToken;
+			}
+
+			optsCopy.externalAuthAddress = opts?.webrtcOptions?.signalingExternalAuthAddress;
+			optsCopy.externalAuthToEntity = opts?.webrtcOptions?.signalingExternalAuthToEntity;
+		}
 
     // TODO: use this instead re-instantiating the transport over and over
     // const directTransport = await dialDirect(signalingAddress, optsCopy);
@@ -597,42 +601,18 @@ function validateDialOptions(opts?: DialOptions) {
       throw new Error("cannot set credentials with accessToken");
     }
 
-    if (opts.externalAuthAddress) {
-      throw new Error("cannot set externalAuthAddress with accessToken");
-    }
-
-    if (opts.externalAuthToEntity) {
-      throw new Error("cannot set externalAuthToEntity with accessToken");
-    }
-
-    if (opts.webrtcOptions) {
-      if (opts.webrtcOptions.signalingAccessToken) {
-        throw new Error(
-          "cannot set webrtcOptions.signalingAccessToken with accessToken"
-        );
-      }
-      if (opts.webrtcOptions.signalingAuthEntity) {
-        throw new Error(
-          "cannot set webrtcOptions.signalingAuthEntity with accessToken"
-        );
-      }
-      if (opts.webrtcOptions.signalingCredentials) {
-        throw new Error(
-          "cannot set webrtcOptions.signalingCredentials with accessToken"
-        );
-      }
-      if (opts.webrtcOptions.signalingExternalAuthAddress) {
-        throw new Error(
-          "cannot set webrtcOptions.signalingExternalAuthAddress with accessToken"
-        );
-      }
-      if (opts.webrtcOptions.signalingExternalAuthToEntity) {
-        throw new Error(
-          "cannot set webrtcOptions.signalingExternalAuthToEntity with accessToken"
-        );
-      }
-    }
-  }
+		if (opts.webrtcOptions) {
+			if (opts.webrtcOptions.signalingAccessToken) {
+				throw new Error("cannot set webrtcOptions.signalingAccessToken with accessToken");
+			}
+			if (opts.webrtcOptions.signalingAuthEntity) {
+				throw new Error("cannot set webrtcOptions.signalingAuthEntity with accessToken");
+			}
+			if (opts.webrtcOptions.signalingCredentials) {
+				throw new Error("cannot set webrtcOptions.signalingCredentials with accessToken");
+			}
+		}
+	}
 
   if (
     opts?.webrtcOptions?.signalingAccessToken &&
