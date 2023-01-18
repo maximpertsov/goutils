@@ -18,8 +18,8 @@ interface activeClientStream {
 }
 
 export class ClientChannel extends BaseChannel {
-  private streamIDCounter = 0;
-  private readonly streams: Record<number, activeClientStream> = {};
+  private streamIDCounter: bigint = BigInt(0);
+  private readonly streams: Record<string, activeClientStream> = {};
 
   constructor(pc: RTCPeerConnection, dc: RTCDataChannel) {
     super(pc, dc);
@@ -56,20 +56,20 @@ export class ClientChannel extends BaseChannel {
   private onChannelMessage(event: MessageEvent<any>) {
     let resp: Response;
     try {
-      resp = Response.deserializeBinary(event.data);
+      resp = Response.fromBinary(event.data);
     } catch (e) {
       console.error("error deserializing message", e);
       return;
     }
 
-    const stream = resp.getStream();
+    const stream = resp.stream;
     if (stream === undefined) {
       console.error("no stream id; discarding");
       return;
     }
 
-    const id = stream.getId();
-    const activeStream = this.streams[id];
+    const id = stream.id;
+    const activeStream = this.streams[id.toString()];
     if (activeStream === undefined) {
       console.error("no stream for id; discarding", "id", id);
       return;
@@ -79,7 +79,7 @@ export class ClientChannel extends BaseChannel {
 
   private nextStreamID(): Stream {
     const stream = new Stream();
-    stream.setId(this.streamIDCounter++);
+    stream.id = this.streamIDCounter++;
     return stream;
   }
 
@@ -93,7 +93,7 @@ export class ClientChannel extends BaseChannel {
         opts
       );
     }
-    let activeStream = this.streams[stream.getId()];
+    let activeStream = this.streams[stream.id.toString()];
     if (activeStream === undefined) {
       if (Object.keys(this.streams).length > MaxStreamCount) {
         return new FailingClientStream(new Error("stream limit hit"), opts);
@@ -105,7 +105,7 @@ export class ClientChannel extends BaseChannel {
         opts
       );
       activeStream = { cs: clientStream };
-      this.streams[stream.getId()] = activeStream;
+      this.streams[stream.id.toString()] = activeStream;
     }
     return activeStream.cs;
   }
@@ -116,22 +116,22 @@ export class ClientChannel extends BaseChannel {
 
   public writeHeaders(stream: Stream, headers: RequestHeaders) {
     const request = new Request();
-    request.setStream(stream);
-    request.setHeaders(headers);
+    request.stream = stream;
+    request.type = { case: "headers", value: headers };
     this.write(request);
   }
 
   public writeMessage(stream: Stream, msg: RequestMessage) {
     const request = new Request();
-    request.setStream(stream);
-    request.setMessage(msg);
+    request.stream = stream;
+    request.type = { case: "message", value: msg };
     this.write(request);
   }
 
   public writeReset(stream: Stream) {
     const request = new Request();
-    request.setStream(stream);
-    request.setRstStream(true);
+    request.stream = stream;
+    request.type = { case: "rstStream", value: true };
     this.write(request);
   }
 }
