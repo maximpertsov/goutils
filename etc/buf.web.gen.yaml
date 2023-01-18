@@ -1,15 +1,14 @@
 version: v1
 plugins:
-  - name: js
+  - name: es
     out: dist/js
+    # https://github.com/bufbuild/connect-web/issues/236
     opt:
-      - import_style=commonjs
-  - name: grpc-web
+      - target=ts
+      - import_extension=none
+  - name: connect-web
     out: dist/js
+    # https://github.com/bufbuild/connect-web/issues/236
     opt:
-      - import_style=commonjs
-      - mode=grpcwebtext
-  - name: ts
-    out: dist/js
-    opt:
-      - service=grpc-web
+      - target=ts
+      - import_extension=none
