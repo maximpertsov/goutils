@@ -1,4 +1,23 @@
 import { grpc } from "@improbable-eng/grpc-web";
+import type {
+  StreamResponse,
+  Transport,
+  UnaryRequest,
+  UnaryResponse,
+} from "@bufbuild/connect-web";
+import {
+  Code,
+  connectErrorFromReason,
+  runServerStream,
+  runUnary,
+} from "@bufbuild/connect-web";
+import type {
+  AnyMessage,
+  Message,
+  ServiceType,
+  MethodInfo,
+  PartialMessage,
+} from "@bufbuild/protobuf";
 import { BaseStream } from "./BaseStream";
 import type { ClientChannel } from "./ClientChannel";
 import { GRPCError } from "./errors";
@@ -18,7 +37,7 @@ import {
 // see golang/client_stream.go
 const maxRequestMessagePacketDataSize = 16373;
 
-export class ClientStream extends BaseStream implements grpc.Transport {
+export class ClientStream extends BaseStream implements Transport {
   private readonly channel: ClientChannel;
   private headersReceived: boolean = false;
   private trailersReceived: boolean = false;
@@ -33,6 +52,93 @@ export class ClientStream extends BaseStream implements grpc.Transport {
     super(stream, onDone, opts);
     this.channel = channel;
   }
+
+  // connect-web interface
+
+  public async unary<
+    I extends Message<I> = AnyMessage,
+    O extends Message<O> = AnyMessage
+  >(
+    service: ServiceType,
+    method: MethodInfo<I, O>,
+    signal: AbortSignal | undefined,
+    _timeoutMs: number | undefined,
+    header: HeadersInit | undefined,
+    _message: PartialMessage<I>
+  ): Promise<UnaryResponse<O>> {
+    try {
+      const request: UnaryRequest = {
+        stream: false,
+        service: service,
+        method: method,
+        url: "WRONG",
+        init: {},
+        signal: signal ?? new AbortController().signal,
+        header: new Headers(header),
+        message: method.O.fromBinary(new Uint8Array()),
+      };
+      const next = async (req: UnaryRequest): Promise<UnaryResponse<O>> => {
+        return {
+          stream: false as const,
+          service: service,
+          method: method,
+          header: req.header,
+          message: req.message as O,
+          trailer: new Headers(),
+        };
+      };
+      // TODO: add interceptors?
+      return runUnary(request, next);
+    } catch (e) {
+      throw connectErrorFromReason(e, Code.Internal);
+    }
+  }
+
+  public async serverStream<
+    I extends Message<I> = AnyMessage,
+    O extends Message<O> = AnyMessage
+  >(
+    service: ServiceType,
+    method: MethodInfo<I, O>,
+    signal: AbortSignal | undefined,
+    _timeoutMs: number | undefined,
+    header: HeadersInit | undefined,
+    _message: PartialMessage<I>
+  ): Promise<StreamResponse<O>> {
+    try {
+      const request: UnaryRequest = {
+        stream: false,
+        service: service,
+        method: method,
+        url: "WRONG",
+        init: {},
+        signal: signal ?? new AbortController().signal,
+        header: new Headers(header),
+        message: method.O.fromBinary(new Uint8Array()),
+      };
+      const read = async () => {
+        return {
+          done: true as const,
+        };
+      };
+      const next = async (req: UnaryRequest): Promise<StreamResponse<O>> => {
+        return {
+          stream: true as const,
+          service: service,
+          method: method,
+          header: req.header,
+          read: read,
+          trailer: new Headers(),
+        };
+      };
+      // TODO: add interceptors?
+      return runServerStream(request, next);
+    } catch (e) {
+      throw connectErrorFromReason(e, Code.Internal);
+    }
+  }
+
+  // improbable interface and utils
 
   public start(metadata: grpc.Metadata) {
     const method = `/${this.opts.methodDefinition.service.serviceName}/${this.opts.methodDefinition.methodName}`;
