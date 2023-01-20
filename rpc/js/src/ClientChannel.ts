@@ -101,7 +101,7 @@ export class ClientChannel extends BaseChannel {
       const clientStream = new ClientStream(
         this,
         stream,
-        (id: number) => this.removeStreamByID(id),
+        (id: bigint) => this.removeStreamByID(id),
         opts
       );
       activeStream = { cs: clientStream };
@@ -110,8 +110,8 @@ export class ClientChannel extends BaseChannel {
     return activeStream.cs;
   }
 
-  private removeStreamByID(id: number) {
-    delete this.streams[id];
+  private removeStreamByID(id: bigint) {
+    delete this.streams[id.toString()];
   }
 
   public writeHeaders(stream: Stream, headers: RequestHeaders) {
