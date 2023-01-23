@@ -1,5 +1,5 @@
-import type { grpc } from "@improbable-eng/grpc-web";
 import type { PacketMessage, Stream } from "./gen/proto/rpc/webrtc/v1/grpc_pb";
+import type { GrpcWebTransportOptions } from "@bufbuild/connect-web";
 
 // MaxMessageSize is the maximum size a gRPC message can be.
 let MaxMessageSize = 1 << 25;
@@ -7,7 +7,7 @@ let MaxMessageSize = 1 << 25;
 export class BaseStream {
   protected readonly stream: Stream;
   private readonly onDone: (id: bigint) => void;
-  protected readonly opts: grpc.TransportOptions;
+  protected readonly opts: GrpcWebTransportOptions;
   protected closed: boolean = false;
   private readonly packetBuf: Array<Uint8Array> = [];
   private packetBufSize = 0;
@@ -16,7 +16,7 @@ export class BaseStream {
   constructor(
     stream: Stream,
     onDone: (id: bigint) => void,
-    opts: grpc.TransportOptions
+    opts: GrpcWebTransportOptions
   ) {
     this.stream = stream;
     this.onDone = onDone;

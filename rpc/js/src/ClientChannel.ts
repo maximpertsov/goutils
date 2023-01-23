@@ -9,6 +9,19 @@ import {
   Response,
   Stream,
 } from "./gen/proto/rpc/webrtc/v1/grpc_pb";
+import type {
+  AnyMessage,
+  Message,
+  ServiceType,
+  MethodInfo,
+  PartialMessage,
+} from "@bufbuild/protobuf";
+import type {
+  StreamResponse,
+  Transport,
+  UnaryResponse,
+} from "@bufbuild/connect-web";
+import { Code, connectErrorFromReason } from "@bufbuild/connect-web";
 
 // MaxStreamCount is the max number of streams a channel can have.
 let MaxStreamCount = 256;
@@ -16,6 +29,8 @@ let MaxStreamCount = 256;
 interface activeClientStream {
   cs: ClientStream;
 }
+
+type TransportFactory = (opts: grpc.TransportOptions) => Transport;
 
 export class ClientChannel extends BaseChannel {
   private streamIDCounter: bigint = BigInt(0);
@@ -37,7 +52,7 @@ export class ClientChannel extends BaseChannel {
     dc.addEventListener("close", () => this.onConnectionTerminated());
   }
 
-  public transportFactory(): grpc.TransportFactory {
+  public transportFactory(): TransportFactory {
     return (opts: grpc.TransportOptions) => {
       return this.newStream(this.nextStreamID(), opts);
     };
@@ -83,20 +98,16 @@ export class ClientChannel extends BaseChannel {
     return stream;
   }
 
-  private newStream(
-    stream: Stream,
-    opts: grpc.TransportOptions
-  ): grpc.Transport {
+  private newStream(stream: Stream, opts: grpc.TransportOptions): Transport {
     if (this.isClosed()) {
       return new FailingClientStream(
-        new ConnectionClosedError("connection closed"),
-        opts
+        new ConnectionClosedError("connection closed")
       );
     }
     let activeStream = this.streams[stream.id.toString()];
     if (activeStream === undefined) {
       if (Object.keys(this.streams).length > MaxStreamCount) {
-        return new FailingClientStream(new Error("stream limit hit"), opts);
+        return new FailingClientStream(new Error("stream limit hit"));
       }
       const clientStream = new ClientStream(
         this,
@@ -136,24 +147,40 @@ export class ClientChannel extends BaseChannel {
   }
 }
 
-class FailingClientStream implements grpc.Transport {
+class FailingClientStream implements Transport {
   private readonly err: Error;
-  private readonly opts: grpc.TransportOptions;
 
-  constructor(err: Error, opts: grpc.TransportOptions) {
+  constructor(err: Error) {
     this.err = err;
-    this.opts = opts;
   }
 
-  public start() {
-    if (this.opts.onEnd) {
-      setTimeout(() => this.opts.onEnd(this.err));
-    }
+  // connect-web interface
+
+  public async unary<
+    I extends Message<I> = AnyMessage,
+    O extends Message<O> = AnyMessage
+  >(
+    _service: ServiceType,
+    _method: MethodInfo<I, O>,
+    _signal: AbortSignal | undefined,
+    _timeoutMs: number | undefined,
+    _header: HeadersInit | undefined,
+    _message: PartialMessage<I>
+  ): Promise<UnaryResponse<O>> {
+    throw connectErrorFromReason(this.err, Code.Internal);
   }
 
-  public sendMessage() {}
-
-  public finishSend() {}
-
-  public cancel() {}
+  public async serverStream<
+    I extends Message<I> = AnyMessage,
+    O extends Message<O> = AnyMessage
+  >(
+    _service: ServiceType,
+    _method: MethodInfo<I, O>,
+    _signal: AbortSignal | undefined,
+    _timeoutMs: number | undefined,
+    _header: HeadersInit | undefined,
+    _message: PartialMessage<I>
+  ): Promise<StreamResponse<O>> {
+    throw connectErrorFromReason(this.err, Code.Internal);
+  }
 }

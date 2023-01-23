@@ -1,15 +1,15 @@
-import { grpc } from "@improbable-eng/grpc-web";
 import type {
+  GrpcWebTransportOptions,
   StreamResponse,
   Transport,
   UnaryRequest,
   UnaryResponse,
 } from "@bufbuild/connect-web";
 import {
-  Code,
   connectErrorFromReason,
   runServerStream,
   runUnary,
+  Code,
 } from "@bufbuild/connect-web";
 import type {
   AnyMessage,
@@ -47,7 +47,7 @@ export class ClientStream extends BaseStream implements Transport {
     stream: Stream,
     onDone: (id: bigint) => void,
     // TODO: use connect-web transport options
-    opts: grpc.TransportOptions
+    opts: GrpcWebTransportOptions
   ) {
     super(stream, onDone, opts);
     this.channel = channel;
@@ -63,7 +63,7 @@ export class ClientStream extends BaseStream implements Transport {
     method: MethodInfo<I, O>,
     signal: AbortSignal | undefined,
     _timeoutMs: number | undefined,
-    header: HeadersInit | undefined,
+    header: Headers,
     _message: PartialMessage<I>
   ): Promise<UnaryResponse<O>> {
     try {
@@ -74,7 +74,7 @@ export class ClientStream extends BaseStream implements Transport {
         url: "WRONG",
         init: {},
         signal: signal ?? new AbortController().signal,
-        header: new Headers(header),
+        header: header,
         message: method.O.fromBinary(new Uint8Array()),
       };
       const next = async (req: UnaryRequest): Promise<UnaryResponse<O>> => {
@@ -102,7 +102,7 @@ export class ClientStream extends BaseStream implements Transport {
     method: MethodInfo<I, O>,
     signal: AbortSignal | undefined,
     _timeoutMs: number | undefined,
-    header: HeadersInit | undefined,
+    header: Headers,
     _message: PartialMessage<I>
   ): Promise<StreamResponse<O>> {
     try {
@@ -113,7 +113,7 @@ export class ClientStream extends BaseStream implements Transport {
         url: "WRONG",
         init: {},
         signal: signal ?? new AbortController().signal,
-        header: new Headers(header),
+        header: header,
         message: method.O.fromBinary(new Uint8Array()),
       };
       const read = async () => {
@@ -140,7 +140,7 @@ export class ClientStream extends BaseStream implements Transport {
 
   // improbable interface and utils
 
-  public start(metadata: grpc.Metadata) {
+  public start(metadata: Headers) {
     const method = `/${this.opts.methodDefinition.service.serviceName}/${this.opts.methodDefinition.methodName}`;
     const requestHeaders = new RequestHeaders();
     requestHeaders.method = method;
@@ -324,40 +324,49 @@ function isValidHeaderAscii(val: number): boolean {
   return isAllowedControlChars(val) || (val >= 0x20 && val <= 0x7e);
 }
 
-function headersToBytes(headers: grpc.Metadata): Uint8Array {
+// TODO: should we encode binary headers here?
+function headersToBytes(headers: Headers): Uint8Array {
   let asString = "";
   headers.forEach((key, values) => {
-    asString += `${key}: ${values.join(", ")}\r\n`;
+    asString += `${key}: ${values}}\r\n`;
   });
   return encodeASCII(asString);
 }
 
 // from https://github.com/jsmouret/grpc-over-webrtc/blob/45cd6d6cf516e78b1e262ea7aa741bc7a7a93dbc/client-improbable/src/grtc/webrtcclient.ts#L7
-const fromGRPCMetadata = (metadata?: grpc.Metadata): Metadata | undefined => {
-  if (!metadata) {
+//
+// TODO: should we expect a binary header here?
+// https://connect.build/docs/web/headers-and-trailers#binary-headers
+const fromGRPCMetadata = (headers?: Headers): Metadata | undefined => {
+  if (!headers) {
     return undefined;
   }
   const result = new Metadata();
-  const md = result.getMdMap();
-  metadata.forEach((key, values) => {
+  headers.forEach((values, key) => {
     const strings = new Strings();
-    strings.setValuesList(values);
-    md.set(key, strings);
+    strings.values = values.split(", ");
+    result.md[key] = strings;
   });
-  if (result.getMdMap().getLength() === 0) {
+  if (Object.keys(result.md).length === 0) {
     return undefined;
   }
   return result;
 };
 
-const toGRPCMetadata = (metadata?: Metadata): grpc.Metadata => {
-  const result = new grpc.Metadata();
-  if (metadata) {
-    metadata
-      .getMdMap()
-      .forEach((entry: any, key: any) =>
-        result.append(key, entry.getValuesList())
-      );
+// TODO: should we encode binary headers here?
+// https://connect.build/docs/web/headers-and-trailers#binary-headers
+const toGRPCMetadata = (metadata?: Metadata): Headers => {
+  const result = new Headers();
+  if (!metadata) {
+    return result;
   }
+  if (!metadata.md) {
+    return result;
+  }
+  Object.entries(metadata.md).forEach(([key, strings]) => {
+    strings.values.forEach((value: string) => {
+      result.set(key, value);
+    });
+  });
   return result;
 };
