@@ -18,6 +18,7 @@ import type {
   MethodInfo,
   PartialMessage,
 } from "@bufbuild/protobuf";
+import { MethodKind } from "@bufbuild/protobuf";
 import { BaseStream } from "./BaseStream";
 import type { ClientChannel } from "./ClientChannel";
 import { GRPCError } from "./errors";
@@ -53,9 +54,10 @@ export class ClientStream extends BaseStream implements Transport {
     this.channel = channel;
   }
 
-  // connect-web interface
+  // CONNECT-WEB INTERFACE
 
   public async unary<
+    // TODO: move definitions to top-level of class
     I extends Message<I> = AnyMessage,
     O extends Message<O> = AnyMessage
   >(
@@ -71,7 +73,7 @@ export class ClientStream extends BaseStream implements Transport {
         stream: false,
         service: service,
         method: method,
-        url: "WRONG",
+        url: this.getUrl(service, method),
         init: {},
         signal: signal ?? new AbortController().signal,
         header: header,
@@ -110,7 +112,7 @@ export class ClientStream extends BaseStream implements Transport {
         stream: false,
         service: service,
         method: method,
-        url: "WRONG",
+        url: this.getUrl(service, method),
         init: {},
         signal: signal ?? new AbortController().signal,
         header: header,
@@ -138,12 +140,25 @@ export class ClientStream extends BaseStream implements Transport {
     }
   }
 
-  // improbable interface and utils
+  // https://github.com/bufbuild/connect-web/blob/125e35ddd39c15272721f67685146abeb366aa72/packages/connect-web/src/grpc-web-transport.ts#L110-L112
+  getUrl<I extends Message<I> = AnyMessage, O extends Message<O> = AnyMessage>(
+    service: ServiceType,
+    method: MethodInfo<I, O>
+  ) {
+    return `${this.opts.baseUrl.replace(/\/$/, "")}/${service.typeName}/${
+      method.name
+    }`;
+  }
 
-  public start(metadata: Headers) {
-    const method = `/${this.opts.methodDefinition.service.serviceName}/${this.opts.methodDefinition.methodName}`;
+  // IMPROBABLE-ENG INTERFACE
+
+  public start<
+    I extends Message<I> = AnyMessage,
+    O extends Message<O> = AnyMessage
+  >(metadata: Headers, service: ServiceType, method: MethodInfo<I, O>) {
+    const requestMethod = `/${service.typeName}/${method.name}`;
     const requestHeaders = new RequestHeaders();
-    requestHeaders.method = method;
+    requestHeaders.method = requestMethod;
     requestHeaders.metadata = fromGRPCMetadata(metadata);
 
     try {
@@ -172,9 +187,15 @@ export class ClientStream extends BaseStream implements Transport {
     }
   }
 
-  public finishSend() {
-    if (!this.opts.methodDefinition.requestStream) {
-      return;
+  public finishSend<
+    I extends Message<I> = AnyMessage,
+    O extends Message<O> = AnyMessage
+  >(method: MethodInfo<I, O>) {
+    switch (method.kind) {
+      case MethodKind.Unary:
+        return;
+      case MethodKind.ServerStreaming:
+        return;
     }
     this.writeMessage(true, undefined);
   }
@@ -258,7 +279,7 @@ export class ClientStream extends BaseStream implements Transport {
   private processHeaders(headers: ResponseHeaders) {
     this.headersReceived = true;
     // this.opts.onHeaders(toGRPCMetadata(headers.metadata), 200);
-    this.opts.onHeaders(toGRPCMetadata(headers.metadata), 200);
+    this.onHeaders(toGRPCMetadata(headers.metadata), 200);
   }
 
   private processMessage(msg: ResponseMessage) {
@@ -269,7 +290,7 @@ export class ClientStream extends BaseStream implements Transport {
     const chunk = new ArrayBuffer(result.length + 5);
     new DataView(chunk, 1, 4).setUint32(0, result.length, false);
     new Uint8Array(chunk, 5).set(result);
-    this.opts.onChunk(new Uint8Array(chunk));
+    this.onChunk(new Uint8Array(chunk));
   }
 
   private processTrailers(trailers: ResponseTrailers) {
@@ -295,12 +316,103 @@ export class ClientStream extends BaseStream implements Transport {
     new DataView(chunk, 0, 1).setUint8(0, 1 << 7);
     new DataView(chunk, 1, 4).setUint32(0, headerBytes.length, false);
     new Uint8Array(chunk, 5).set(headerBytes);
-    this.opts.onChunk(new Uint8Array(chunk));
+    this.onChunk(new Uint8Array(chunk));
     if (statusCode === 0) {
       this.closeWithRecvError();
       return;
     }
     this.closeWithRecvError(new GRPCError(statusCode, statusMessage));
+  }
+
+  // EXTENDED TRANSPORT OPTIONS
+  //
+  // ported from improbably engine transport logic - used to be defined in
+  // transport options
+
+  onHeaders(headers: Headers, status: number) {
+    if (this.closed) {
+      return;
+    }
+
+    if (status === 0) {
+      // The request has failed due to connectivity issues. Do not capture the headers
+    } else {
+      this.responseHeaders = headers;
+
+      const gRPCStatus = this.getStatusFromHeaders(headers);
+
+      const code =
+        gRPCStatus && gRPCStatus >= 0
+          ? gRPCStatus
+          : codeFromGrpcWebHttpStatus(status);
+
+      const gRPCMessage = headers.get("grpc-message") || [];
+
+      this.rawOnHeaders(headers);
+
+      if (code !== null) {
+        const statusMessage = this.decodeGRPCStatus(gRPCMessage[0]);
+        this.rawOnError(code, statusMessage, headers);
+      }
+    }
+  }
+
+  onChunk(chunkBytes: Uint8Array) {
+    if (this.closed) {
+      return;
+    }
+
+    let data: Chunk[] = [];
+    try {
+      data = this.parser.parse(chunkBytes);
+    } catch (err) {
+      this.rawOnError(Code.Internal, `parsing error: ${err.message}`);
+      return;
+    }
+
+    data.forEach((chunk: Chunk) => {
+      if (chunk.chunkType === ChunkType.MESSAGE) {
+        const deserialized =
+          this.methodDefinition.responseType.deserializeBinary(chunk.data!);
+        this.rawOnMessage(deserialized);
+      } else if (chunk.chunkType === ChunkType.TRAILERS) {
+        if (!this.responseHeaders) {
+          this.responseHeaders = new Headers(chunk.trailers);
+          this.rawOnHeaders(this.responseHeaders);
+        } else {
+          this.responseTrailers = new Headers(chunk.trailers);
+        }
+      }
+    });
+  }
+
+  // UTILITIES
+
+  rawOnHeaders(_headers: Headers) {
+    if (this.completed) return;
+    // this.onHeadersCallbacks.forEach((callback) => {
+    //   try {
+    //     callback(headers);
+    //   } catch (e) {
+    //     setTimeout(() => {
+    //       throw e;
+    //     }, 0);
+    //   }
+    // });
+  }
+
+  rawOnMessage(_res: Response) {
+    if (this.completed || this.closed) return;
+    // this.onMessageCallbacks.forEach(callback => {
+    //   if (this.closed) return;
+    //   try {
+    //     callback(res);
+    //   } catch (e) {
+    //     setTimeout(() => {
+    //       throw e;
+    //     }, 0);
+    //   }
+    // });
   }
 }
 
@@ -370,3 +482,168 @@ const toGRPCMetadata = (metadata?: Metadata): Headers => {
   });
   return result;
 };
+
+// https://github.com/bufbuild/connect-web/blob/125e35ddd39c15272721f67685146abeb366aa72/packages/connect-web/src/code.ts#L141-L165
+// TODO: can connect-web expose this function?
+export function codeFromGrpcWebHttpStatus(httpStatus: number): Code | null {
+  switch (httpStatus) {
+    case 200: // Ok
+      return null;
+    case 400: // Bad Request
+      return Code.Internal;
+    case 401: // Unauthorized
+      return Code.Unauthenticated;
+    case 403: // Forbidden
+      return Code.PermissionDenied;
+    case 404: // Not Found
+      return Code.Unimplemented;
+    case 429: // Too Many Requests
+      return Code.Unavailable;
+    case 502: // Bad Gateway
+      return Code.Unavailable;
+    case 503: // Service Unavailable
+      return Code.Unavailable;
+    case 504: // Gateway Timeout
+      return Code.Unavailable;
+    default:
+      return Code.Unknown;
+  }
+}
+
+// CHUNK
+
+const HEADER_SIZE = 5;
+
+export enum ChunkType {
+  MESSAGE = 1,
+  TRAILERS = 2,
+}
+
+export type Chunk = {
+  chunkType: ChunkType;
+  trailers?: Headers;
+  data?: Uint8Array;
+};
+
+function isTrailerHeader(headerView: DataView) {
+  // This is encoded in the MSB of the grpc header's first byte.
+  return (headerView.getUint8(0) & 0x80) === 0x80;
+}
+
+export function decodeASCII(input: Uint8Array): string {
+  // With ES2015, TypedArray.prototype.every can be used
+  for (let i = 0; i !== input.length; ++i) {
+    if (!isValidHeaderAscii(input[i])) {
+      throw new Error("Metadata is not valid (printable) ASCII");
+    }
+  }
+  // With ES2017, the array conversion can be omitted with iterables
+  return String.fromCharCode(...Array.prototype.slice.call(input));
+}
+
+function parseTrailerData(msgData: Uint8Array): Headers {
+  return new Headers(decodeASCII(msgData));
+}
+
+function readLengthFromHeader(headerView: DataView) {
+  return headerView.getUint32(1, false);
+}
+
+function hasEnoughBytes(
+  buffer: Uint8Array,
+  position: number,
+  byteCount: number
+) {
+  return buffer.byteLength - position >= byteCount;
+}
+
+function sliceUint8Array(buffer: Uint8Array, from: number, to?: number) {
+  if (buffer.slice) {
+    return buffer.slice(from, to);
+  }
+
+  let end = buffer.length;
+  if (to !== undefined) {
+    end = to;
+  }
+
+  const num = end - from;
+  const array = new Uint8Array(num);
+  let arrayIndex = 0;
+  for (let i = from; i < end; i++) {
+    array[arrayIndex++] = buffer[i];
+  }
+  return array;
+}
+
+export class ChunkParser {
+  buffer: Uint8Array | null = null;
+  position: number = 0;
+
+  parse(bytes: Uint8Array, flush?: boolean): Chunk[] {
+    if (bytes.length === 0 && flush) {
+      return [];
+    }
+
+    const chunkData: Chunk[] = [];
+
+    if (this.buffer == null) {
+      this.buffer = bytes;
+      this.position = 0;
+    } else if (this.position === this.buffer.byteLength) {
+      this.buffer = bytes;
+      this.position = 0;
+    } else {
+      const remaining = this.buffer.byteLength - this.position;
+      const newBuf = new Uint8Array(remaining + bytes.byteLength);
+      const fromExisting = sliceUint8Array(this.buffer, this.position);
+      newBuf.set(fromExisting, 0);
+      const latestDataBuf = new Uint8Array(bytes);
+      newBuf.set(latestDataBuf, remaining);
+      this.buffer = newBuf;
+      this.position = 0;
+    }
+
+    while (true) {
+      if (!hasEnoughBytes(this.buffer, this.position, HEADER_SIZE)) {
+        return chunkData;
+      }
+
+      let headerBuffer = sliceUint8Array(
+        this.buffer,
+        this.position,
+        this.position + HEADER_SIZE
+      );
+
+      const headerView = new DataView(
+        headerBuffer.buffer,
+        headerBuffer.byteOffset,
+        headerBuffer.byteLength
+      );
+
+      const msgLength = readLengthFromHeader(headerView);
+      if (
+        !hasEnoughBytes(this.buffer, this.position, HEADER_SIZE + msgLength)
+      ) {
+        return chunkData;
+      }
+
+      const messageData = sliceUint8Array(
+        this.buffer,
+        this.position + HEADER_SIZE,
+        this.position + HEADER_SIZE + msgLength
+      );
+      this.position += HEADER_SIZE + msgLength;
+
+      if (isTrailerHeader(headerView)) {
+        chunkData.push({
+          chunkType: ChunkType.TRAILERS,
+          trailers: parseTrailerData(messageData),
+        });
+        return chunkData;
+      } else {
+        chunkData.push({ chunkType: ChunkType.MESSAGE, data: messageData });
+      }
+    }
+  }
+}
