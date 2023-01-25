@@ -262,7 +262,7 @@ export class ClientStream extends BaseStream implements Transport {
           return;
         }
         if (this.trailersReceived) {
-          this.closeWithRecvError(new Error("headers received after trailers"));
+          this.closeWithRecvError(new Error("message received after trailers"));
           return;
         }
         this.processMessage(resp.type.value!);
