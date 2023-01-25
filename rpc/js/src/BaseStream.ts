@@ -1,7 +1,7 @@
 import type { PacketMessage, Stream } from "./gen/proto/rpc/webrtc/v1/grpc_pb";
 import type { GrpcWebTransportOptions } from "@bufbuild/connect-web";
 
-import { Code } from "@bufbuild/connect-web";
+import type { Code } from "@bufbuild/connect-web";
 
 // MaxMessageSize is the maximum size a gRPC message can be.
 let MaxMessageSize = 1 << 25;
@@ -89,36 +89,36 @@ export class BaseStream {
   // transport options
 
   onEnd(_err?: Error) {
-    if (this.closed) {
-      return;
-    }
-
-    if (this.responseTrailers === undefined) {
-      if (this.responseHeaders === undefined) {
-        // The request was unsuccessful - it did not receive any headers
-        this.rawOnError(Code.Unknown, "Response closed without headers");
-        return;
-      }
-
-      const grpcStatus = this.getStatusFromHeaders(this.responseHeaders);
-      const grpcMessage = this.responseHeaders.get("grpc-message");
-
-      // This was a headers/trailers-only response
-
-      if (grpcStatus === null) {
-        this.rawOnEnd(
-          Code.Unknown,
-          "Response closed without grpc-status (Headers only)",
-          this.responseHeaders
-        );
-        return;
-      }
-
-      // Return an empty trailers instance
-      const statusMessage = this.decodeGRPCStatus(grpcMessage[0]);
-      this.rawOnEnd(grpcStatus, statusMessage, this.responseHeaders);
-      return;
-    }
+    // if (this.closed) {
+    //   return;
+    // }
+    //
+    // if (this.responseTrailers === undefined) {
+    //   if (this.responseHeaders === undefined) {
+    //     // The request was unsuccessful - it did not receive any headers
+    //     this.rawOnError(Code.Unknown, "Response closed without headers");
+    //     return;
+    //   }
+    //
+    //   const grpcStatus = this.getStatusFromHeaders(this.responseHeaders);
+    //   const grpcMessage = this.responseHeaders.get("grpc-message");
+    //
+    //   // This was a headers/trailers-only response
+    //
+    //   if (grpcStatus === null) {
+    //     this.rawOnEnd(
+    //       Code.Unknown,
+    //       "Response closed without grpc-status (Headers only)",
+    //       this.responseHeaders
+    //     );
+    //     return;
+    //   }
+    //
+    //   // Return an empty trailers instance
+    //   const statusMessage = this.decodeGRPCStatus(grpcMessage[0]);
+    //   this.rawOnEnd(grpcStatus, statusMessage, this.responseHeaders);
+    //   return;
+    // }
   }
 
   rawOnEnd(_code: Code, _message: string, _trailers: Headers) {

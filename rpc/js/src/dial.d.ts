@@ -1,4 +1,4 @@
-import { grpc } from "@improbable-eng/grpc-web";
+import type { GrpcWebTransportOptions, Transport } from "@bufbuild/connect-web";
 export interface DialOptions {
     authEntity?: string;
     credentials?: Credentials;
@@ -20,10 +20,6 @@ export interface Credentials {
     type: string;
     payload: string;
 }
-export declare function dialDirect(address: string, opts?: DialOptions): Promise<grpc.TransportFactory>;
-interface WebRTCConnection {
-    transportFactory: grpc.TransportFactory;
-    peerConnection: RTCPeerConnection;
-}
-export declare function dialWebRTC(signalingAddress: string, host: string, opts?: DialOptions): Promise<WebRTCConnection>;
+declare type TransportFactory = (opts: GrpcWebTransportOptions) => Transport;
+export declare function dialDirect(address: string, opts?: DialOptions): Promise<TransportFactory>;
 export {};

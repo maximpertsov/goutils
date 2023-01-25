@@ -1,4 +1,4 @@
-import type { ProtobufMessage } from "@improbable-eng/grpc-web/dist/typings/message";
+import type { AnyMessage } from "@bufbuild/protobuf";
 export declare class BaseChannel {
     readonly ready: Promise<unknown>;
     private readonly peerConn;
@@ -16,5 +16,5 @@ export declare class BaseChannel {
     private onChannelOpen;
     private onChannelClose;
     private onChannelError;
-    protected write(msg: ProtobufMessage): void;
+    protected write(msg: AnyMessage): void;
 }

@@ -1,21 +1,31 @@
-import { grpc } from "@improbable-eng/grpc-web";
+import type { GrpcWebTransportOptions, StreamResponse, Transport, UnaryResponse } from "@bufbuild/connect-web";
+import { Code } from "@bufbuild/connect-web";
+import type { AnyMessage, Message, ServiceType, MethodInfo, PartialMessage } from "@bufbuild/protobuf";
 import { BaseStream } from "./BaseStream";
 import type { ClientChannel } from "./ClientChannel";
 import { Response, Stream } from "./gen/proto/rpc/webrtc/v1/grpc_pb";
-export declare class ClientStream extends BaseStream implements grpc.Transport {
+export declare class ClientStream extends BaseStream implements Transport {
     private readonly channel;
     private headersReceived;
     private trailersReceived;
-    constructor(channel: ClientChannel, stream: Stream, onDone: (id: number) => void, opts: grpc.TransportOptions);
-    start(metadata: grpc.Metadata): void;
-    sendMessage(msgBytes?: Uint8Array): void;
+    protected responseMessage?: Uint8Array | undefined;
+    constructor(channel: ClientChannel, stream: Stream, onDone: (id: bigint) => void, opts: GrpcWebTransportOptions);
+    unary<I extends Message<I> = AnyMessage, O extends Message<O> = AnyMessage>(service: ServiceType, method: MethodInfo<I, O>, signal: AbortSignal | undefined, _timeoutMs: number | undefined, header: Headers, message: PartialMessage<I>): Promise<UnaryResponse<O>>;
+    serverStream<I extends Message<I> = AnyMessage, O extends Message<O> = AnyMessage>(service: ServiceType, method: MethodInfo<I, O>, signal: AbortSignal | undefined, _timeoutMs: number | undefined, header: Headers, _message: PartialMessage<I>): Promise<StreamResponse<O>>;
+    getUrl<I extends Message<I> = AnyMessage, O extends Message<O> = AnyMessage>(service: ServiceType, method: MethodInfo<I, O>): string;
+    start<I extends Message<I> = AnyMessage, O extends Message<O> = AnyMessage>(metadata: Headers, service: ServiceType, method: MethodInfo<I, O>): void;
+    sendMessage<I extends Message<I>>(message: I): void;
     resetStream(): void;
-    finishSend(): void;
+    finishSend<I extends Message<I> = AnyMessage, O extends Message<O> = AnyMessage>(method: MethodInfo<I, O>): void;
     cancel(): void;
     private writeMessage;
     onResponse(resp: Response): void;
     private processHeaders;
     private processMessage;
     private processTrailers;
+    onHeaders(headers: Headers, status: number): void;
+    rawOnHeaders(_headers: Headers): void;
+    rawOnMessage(_res: Response): void;
 }
 export declare function encodeASCII(input: string): Uint8Array;
+export declare function codeFromGrpcWebHttpStatus(httpStatus: number): Code | null;

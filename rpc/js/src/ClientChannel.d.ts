@@ -1,11 +1,12 @@
-import type { grpc } from "@improbable-eng/grpc-web";
 import { BaseChannel } from "./BaseChannel";
 import { RequestHeaders, RequestMessage, Stream } from "./gen/proto/rpc/webrtc/v1/grpc_pb";
+import type { GrpcWebTransportOptions, Transport } from "@bufbuild/connect-web";
+declare type TransportFactory = (opts: GrpcWebTransportOptions) => Transport;
 export declare class ClientChannel extends BaseChannel {
     private streamIDCounter;
     private readonly streams;
     constructor(pc: RTCPeerConnection, dc: RTCDataChannel);
-    transportFactory(): grpc.TransportFactory;
+    transportFactory(): TransportFactory;
     private onConnectionTerminated;
     private onChannelMessage;
     private nextStreamID;
@@ -15,3 +16,4 @@ export declare class ClientChannel extends BaseChannel {
     writeMessage(stream: Stream, msg: RequestMessage): void;
     writeReset(stream: Stream): void;
 }
+export {};
