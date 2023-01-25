@@ -12,6 +12,7 @@ export class BaseStream {
   protected readonly opts: GrpcWebTransportOptions;
   protected closed: boolean = false;
   private readonly packetBuf: Array<Uint8Array> = [];
+
   private packetBufSize = 0;
   private err?: Error;
 
@@ -28,6 +29,17 @@ export class BaseStream {
     this.stream = stream;
     this.onDone = onDone;
     this.opts = opts;
+  }
+
+  public waitUntilComplete(): Promise<void> {
+    // TODO: give up after eventually?
+    const wait = (resolve: () => void) => {
+      if (this.completed) return resolve();
+      setTimeout(wait, 30);
+    };
+    return new Promise(function (resolve, _reject) {
+      wait(resolve);
+    });
   }
 
   public closeWithRecvError(err?: Error) {

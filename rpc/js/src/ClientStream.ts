@@ -8,7 +8,6 @@ import type {
 import {
   connectErrorFromReason,
   runServerStream,
-  runUnary,
   Code,
 } from "@bufbuild/connect-web";
 import type {
@@ -43,6 +42,8 @@ export class ClientStream extends BaseStream implements Transport {
   private headersReceived: boolean = false;
   private trailersReceived: boolean = false;
 
+  protected responseMessage?: Uint8Array | undefined;
+
   constructor(
     channel: ClientChannel,
     stream: Stream,
@@ -66,31 +67,62 @@ export class ClientStream extends BaseStream implements Transport {
     signal: AbortSignal | undefined,
     _timeoutMs: number | undefined,
     header: Headers,
-    _message: PartialMessage<I>
+    message: PartialMessage<I>
   ): Promise<UnaryResponse<O>> {
     try {
-      const request: UnaryRequest = {
-        stream: false,
+      if (signal && signal.aborted) {
+        this.cancel();
+      }
+      this.start(header, service, method);
+      this.sendMessage(
+        message instanceof method.I ? message : new method.I(message)
+      );
+      this.finishSend(method);
+      await this.waitUntilComplete();
+
+      if (!this.responseHeaders) {
+        throw connectErrorFromReason("no response headers", Code.Internal);
+      }
+
+      if (!this.responseMessage) {
+        throw connectErrorFromReason("no response message", Code.Internal);
+      }
+
+      if (!this.responseTrailers) {
+        throw connectErrorFromReason("no response trailers", Code.Internal);
+      }
+
+      return {
+        stream: false as const,
         service: service,
         method: method,
-        url: this.getUrl(service, method),
-        init: {},
-        signal: signal ?? new AbortController().signal,
-        header: header,
-        message: method.O.fromBinary(new Uint8Array()),
+        header: this.responseHeaders,
+        message: method.O.fromBinary(this.responseMessage),
+        trailer: this.responseTrailers,
       };
-      const next = async (req: UnaryRequest): Promise<UnaryResponse<O>> => {
-        return {
-          stream: false as const,
-          service: service,
-          method: method,
-          header: req.header,
-          message: req.message as O,
-          trailer: new Headers(),
-        };
-      };
-      // TODO: add interceptors?
-      return runUnary(request, next);
+
+      // const request: UnaryRequest = {
+      //   stream: false,
+      //   service: service,
+      //   method: method,
+      //   url: this.getUrl(service, method),
+      //   init: {},
+      //   signal: signal ?? new AbortController().signal,
+      //   header: header,
+      //   message: method.O.fromBinary(new Uint8Array()),
+      // };
+      // const next = async (req: UnaryRequest): Promise<UnaryResponse<O>> => {
+      //   return {
+      //     stream: false as const,
+      //     service: service,
+      //     method: method,
+      //     header: req.header,
+      //     message: req.message as O,
+      //     trailer: new Headers(),
+      //   };
+      // };
+      // // TODO: add interceptors?
+      // return runUnary(request, next);
     } catch (e) {
       throw connectErrorFromReason(e, Code.Internal);
     }
@@ -169,14 +201,21 @@ export class ClientStream extends BaseStream implements Transport {
     }
   }
 
-  public sendMessage(msgBytes?: Uint8Array) {
-    // skip frame header bytes
-    if (msgBytes) {
-      this.writeMessage(false, msgBytes.slice(5));
-      return;
-    }
-    this.writeMessage(false, undefined);
+  public sendMessage<I extends Message<I>>(message: I) {
+    // TODO: skip frame header bytes?
+    const msgBytes = message.toBinary();
+    // TODO: Do we need to slice the message here?
+    this.writeMessage(false, msgBytes.slice(5));
   }
+
+  // public sendMessage(msgBytes?: Uint8Array) {
+  //   // skip frame header bytes
+  //   if (msgBytes) {
+  //     this.writeMessage(false, msgBytes.slice(5));
+  //     return;
+  //   }
+  //   this.writeMessage(false, undefined);
+  // }
 
   public resetStream() {
     try {
@@ -209,7 +248,7 @@ export class ClientStream extends BaseStream implements Transport {
 
   private writeMessage(eos: boolean, msgBytes?: Uint8Array) {
     try {
-      if (!msgBytes || msgBytes.length == 0) {
+      if (!msgBytes || msgBytes.length === 0) {
         const packet = new PacketMessage();
         packet.eom = true;
         const requestMessage = new RequestMessage();
@@ -290,7 +329,8 @@ export class ClientStream extends BaseStream implements Transport {
     const chunk = new ArrayBuffer(result.length + 5);
     new DataView(chunk, 1, 4).setUint32(0, result.length, false);
     new Uint8Array(chunk, 5).set(result);
-    this.onChunk(new Uint8Array(chunk));
+    // this.onChunk(new Uint8Array(chunk));
+    this.responseMessage = new Uint8Array(chunk);
   }
 
   private processTrailers(trailers: ResponseTrailers) {
@@ -316,7 +356,7 @@ export class ClientStream extends BaseStream implements Transport {
     new DataView(chunk, 0, 1).setUint8(0, 1 << 7);
     new DataView(chunk, 1, 4).setUint32(0, headerBytes.length, false);
     new Uint8Array(chunk, 5).set(headerBytes);
-    this.onChunk(new Uint8Array(chunk));
+    // this.onChunk(new Uint8Array(chunk));
     if (statusCode === 0) {
       this.closeWithRecvError();
       return;
@@ -357,34 +397,34 @@ export class ClientStream extends BaseStream implements Transport {
     }
   }
 
-  onChunk(chunkBytes: Uint8Array) {
-    if (this.closed) {
-      return;
-    }
-
-    let data: Chunk[] = [];
-    try {
-      data = this.parser.parse(chunkBytes);
-    } catch (err) {
-      this.rawOnError(Code.Internal, `parsing error: ${err.message}`);
-      return;
-    }
-
-    data.forEach((chunk: Chunk) => {
-      if (chunk.chunkType === ChunkType.MESSAGE) {
-        const deserialized =
-          this.methodDefinition.responseType.deserializeBinary(chunk.data!);
-        this.rawOnMessage(deserialized);
-      } else if (chunk.chunkType === ChunkType.TRAILERS) {
-        if (!this.responseHeaders) {
-          this.responseHeaders = new Headers(chunk.trailers);
-          this.rawOnHeaders(this.responseHeaders);
-        } else {
-          this.responseTrailers = new Headers(chunk.trailers);
-        }
-      }
-    });
-  }
+  // onChunk(chunkBytes: Uint8Array) {
+  //   if (this.closed) {
+  //     return;
+  //   }
+  //
+  //   let data: Chunk[] = [];
+  //   try {
+  //     data = this.parser.parse(chunkBytes);
+  //   } catch (err) {
+  //     this.rawOnError(Code.Internal, `parsing error: ${err.message}`);
+  //     return;
+  //   }
+  //
+  //   data.forEach((chunk: Chunk) => {
+  //     if (chunk.chunkType === ChunkType.MESSAGE) {
+  //       const deserialized =
+  //         this.methodDefinition.responseType.deserializeBinary(chunk.data!);
+  //       this.rawOnMessage(deserialized);
+  //     } else if (chunk.chunkType === ChunkType.TRAILERS) {
+  //       if (!this.responseHeaders) {
+  //         this.responseHeaders = new Headers(chunk.trailers);
+  //         this.rawOnHeaders(this.responseHeaders);
+  //       } else {
+  //         this.responseTrailers = new Headers(chunk.trailers);
+  //       }
+  //     }
+  //   });
+  // }
 
   // UTILITIES
 
@@ -510,140 +550,140 @@ export function codeFromGrpcWebHttpStatus(httpStatus: number): Code | null {
   }
 }
 
-// CHUNK
-
-const HEADER_SIZE = 5;
-
-export enum ChunkType {
-  MESSAGE = 1,
-  TRAILERS = 2,
-}
-
-export type Chunk = {
-  chunkType: ChunkType;
-  trailers?: Headers;
-  data?: Uint8Array;
-};
-
-function isTrailerHeader(headerView: DataView) {
-  // This is encoded in the MSB of the grpc header's first byte.
-  return (headerView.getUint8(0) & 0x80) === 0x80;
-}
-
-export function decodeASCII(input: Uint8Array): string {
-  // With ES2015, TypedArray.prototype.every can be used
-  for (let i = 0; i !== input.length; ++i) {
-    if (!isValidHeaderAscii(input[i])) {
-      throw new Error("Metadata is not valid (printable) ASCII");
-    }
-  }
-  // With ES2017, the array conversion can be omitted with iterables
-  return String.fromCharCode(...Array.prototype.slice.call(input));
-}
-
-function parseTrailerData(msgData: Uint8Array): Headers {
-  return new Headers(decodeASCII(msgData));
-}
-
-function readLengthFromHeader(headerView: DataView) {
-  return headerView.getUint32(1, false);
-}
-
-function hasEnoughBytes(
-  buffer: Uint8Array,
-  position: number,
-  byteCount: number
-) {
-  return buffer.byteLength - position >= byteCount;
-}
-
-function sliceUint8Array(buffer: Uint8Array, from: number, to?: number) {
-  if (buffer.slice) {
-    return buffer.slice(from, to);
-  }
-
-  let end = buffer.length;
-  if (to !== undefined) {
-    end = to;
-  }
-
-  const num = end - from;
-  const array = new Uint8Array(num);
-  let arrayIndex = 0;
-  for (let i = from; i < end; i++) {
-    array[arrayIndex++] = buffer[i];
-  }
-  return array;
-}
-
-export class ChunkParser {
-  buffer: Uint8Array | null = null;
-  position: number = 0;
-
-  parse(bytes: Uint8Array, flush?: boolean): Chunk[] {
-    if (bytes.length === 0 && flush) {
-      return [];
-    }
-
-    const chunkData: Chunk[] = [];
-
-    if (this.buffer == null) {
-      this.buffer = bytes;
-      this.position = 0;
-    } else if (this.position === this.buffer.byteLength) {
-      this.buffer = bytes;
-      this.position = 0;
-    } else {
-      const remaining = this.buffer.byteLength - this.position;
-      const newBuf = new Uint8Array(remaining + bytes.byteLength);
-      const fromExisting = sliceUint8Array(this.buffer, this.position);
-      newBuf.set(fromExisting, 0);
-      const latestDataBuf = new Uint8Array(bytes);
-      newBuf.set(latestDataBuf, remaining);
-      this.buffer = newBuf;
-      this.position = 0;
-    }
-
-    while (true) {
-      if (!hasEnoughBytes(this.buffer, this.position, HEADER_SIZE)) {
-        return chunkData;
-      }
-
-      let headerBuffer = sliceUint8Array(
-        this.buffer,
-        this.position,
-        this.position + HEADER_SIZE
-      );
-
-      const headerView = new DataView(
-        headerBuffer.buffer,
-        headerBuffer.byteOffset,
-        headerBuffer.byteLength
-      );
-
-      const msgLength = readLengthFromHeader(headerView);
-      if (
-        !hasEnoughBytes(this.buffer, this.position, HEADER_SIZE + msgLength)
-      ) {
-        return chunkData;
-      }
-
-      const messageData = sliceUint8Array(
-        this.buffer,
-        this.position + HEADER_SIZE,
-        this.position + HEADER_SIZE + msgLength
-      );
-      this.position += HEADER_SIZE + msgLength;
-
-      if (isTrailerHeader(headerView)) {
-        chunkData.push({
-          chunkType: ChunkType.TRAILERS,
-          trailers: parseTrailerData(messageData),
-        });
-        return chunkData;
-      } else {
-        chunkData.push({ chunkType: ChunkType.MESSAGE, data: messageData });
-      }
-    }
-  }
-}
+// // CHUNK
+//
+// const HEADER_SIZE = 5;
+//
+// export enum ChunkType {
+//   MESSAGE = 1,
+//   TRAILERS = 2,
+// }
+//
+// export type Chunk = {
+//   chunkType: ChunkType;
+//   trailers?: Headers;
+//   data?: Uint8Array;
+// };
+//
+// function isTrailerHeader(headerView: DataView) {
+//   // This is encoded in the MSB of the grpc header's first byte.
+//   return (headerView.getUint8(0) & 0x80) === 0x80;
+// }
+//
+// export function decodeASCII(input: Uint8Array): string {
+//   // With ES2015, TypedArray.prototype.every can be used
+//   for (let i = 0; i !== input.length; ++i) {
+//     if (!isValidHeaderAscii(input[i])) {
+//       throw new Error("Metadata is not valid (printable) ASCII");
+//     }
+//   }
+//   // With ES2017, the array conversion can be omitted with iterables
+//   return String.fromCharCode(...Array.prototype.slice.call(input));
+// }
+//
+// function parseTrailerData(msgData: Uint8Array): Headers {
+//   return new Headers(decodeASCII(msgData));
+// }
+//
+// function readLengthFromHeader(headerView: DataView) {
+//   return headerView.getUint32(1, false);
+// }
+//
+// function hasEnoughBytes(
+//   buffer: Uint8Array,
+//   position: number,
+//   byteCount: number
+// ) {
+//   return buffer.byteLength - position >= byteCount;
+// }
+//
+// function sliceUint8Array(buffer: Uint8Array, from: number, to?: number) {
+//   if (buffer.slice) {
+//     return buffer.slice(from, to);
+//   }
+//
+//   let end = buffer.length;
+//   if (to !== undefined) {
+//     end = to;
+//   }
+//
+//   const num = end - from;
+//   const array = new Uint8Array(num);
+//   let arrayIndex = 0;
+//   for (let i = from; i < end; i++) {
+//     array[arrayIndex++] = buffer[i];
+//   }
+//   return array;
+// }
+//
+// export class ChunkParser {
+//   buffer: Uint8Array | null = null;
+//   position: number = 0;
+//
+//   parse(bytes: Uint8Array, flush?: boolean): Chunk[] {
+//     if (bytes.length === 0 && flush) {
+//       return [];
+//     }
+//
+//     const chunkData: Chunk[] = [];
+//
+//     if (this.buffer == null) {
+//       this.buffer = bytes;
+//       this.position = 0;
+//     } else if (this.position === this.buffer.byteLength) {
+//       this.buffer = bytes;
+//       this.position = 0;
+//     } else {
+//       const remaining = this.buffer.byteLength - this.position;
+//       const newBuf = new Uint8Array(remaining + bytes.byteLength);
+//       const fromExisting = sliceUint8Array(this.buffer, this.position);
+//       newBuf.set(fromExisting, 0);
+//       const latestDataBuf = new Uint8Array(bytes);
+//       newBuf.set(latestDataBuf, remaining);
+//       this.buffer = newBuf;
+//       this.position = 0;
+//     }
+//
+//     while (true) {
+//       if (!hasEnoughBytes(this.buffer, this.position, HEADER_SIZE)) {
+//         return chunkData;
+//       }
+//
+//       let headerBuffer = sliceUint8Array(
+//         this.buffer,
+//         this.position,
+//         this.position + HEADER_SIZE
+//       );
+//
+//       const headerView = new DataView(
+//         headerBuffer.buffer,
+//         headerBuffer.byteOffset,
+//         headerBuffer.byteLength
+//       );
+//
+//       const msgLength = readLengthFromHeader(headerView);
+//       if (
+//         !hasEnoughBytes(this.buffer, this.position, HEADER_SIZE + msgLength)
+//       ) {
+//         return chunkData;
+//       }
+//
+//       const messageData = sliceUint8Array(
+//         this.buffer,
+//         this.position + HEADER_SIZE,
+//         this.position + HEADER_SIZE + msgLength
+//       );
+//       this.position += HEADER_SIZE + msgLength;
+//
+//       if (isTrailerHeader(headerView)) {
+//         chunkData.push({
+//           chunkType: ChunkType.TRAILERS,
+//           trailers: parseTrailerData(messageData),
+//         });
+//         return chunkData;
+//       } else {
+//         chunkData.push({ chunkType: ChunkType.MESSAGE, data: messageData });
+//       }
+//     }
+//   }
+// }
