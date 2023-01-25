@@ -1,4 +1,3 @@
-import type { grpc } from "@improbable-eng/grpc-web";
 import { BaseChannel } from "./BaseChannel";
 import { ClientStream } from "./ClientStream";
 import { ConnectionClosedError } from "./errors";
@@ -17,6 +16,7 @@ import type {
   PartialMessage,
 } from "@bufbuild/protobuf";
 import type {
+  GrpcWebTransportOptions,
   StreamResponse,
   Transport,
   UnaryResponse,
@@ -30,7 +30,7 @@ interface activeClientStream {
   cs: ClientStream;
 }
 
-type TransportFactory = (opts: grpc.TransportOptions) => Transport;
+type TransportFactory = (opts: GrpcWebTransportOptions) => Transport;
 
 export class ClientChannel extends BaseChannel {
   private streamIDCounter: bigint = BigInt(0);
@@ -53,7 +53,7 @@ export class ClientChannel extends BaseChannel {
   }
 
   public transportFactory(): TransportFactory {
-    return (opts: grpc.TransportOptions) => {
+    return (opts: GrpcWebTransportOptions) => {
       return this.newStream(this.nextStreamID(), opts);
     };
   }
@@ -98,7 +98,7 @@ export class ClientChannel extends BaseChannel {
     return stream;
   }
 
-  private newStream(stream: Stream, opts: grpc.TransportOptions): Transport {
+  private newStream(stream: Stream, opts: GrpcWebTransportOptions): Transport {
     if (this.isClosed()) {
       return new FailingClientStream(
         new ConnectionClosedError("connection closed")
