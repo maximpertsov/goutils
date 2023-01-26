@@ -22,4 +22,9 @@ export interface Credentials {
 }
 declare type TransportFactory = (opts: GrpcWebTransportOptions) => Transport;
 export declare function dialDirect(address: string, opts?: DialOptions): Promise<TransportFactory>;
+interface WebRTCConnection {
+    transportFactory: TransportFactory;
+    peerConnection: RTCPeerConnection;
+}
+export declare function dialWebRTC(signalingAddress: string, host: string, opts?: DialOptions): Promise<WebRTCConnection>;
 export {};

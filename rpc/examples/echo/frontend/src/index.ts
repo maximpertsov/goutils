@@ -1,6 +1,11 @@
 import { grpc } from "@improbable-eng/grpc-web";
 // import { Credentials, dialDirect, dialWebRTC } from "@viamrobotics/rpc";
-import { Credentials, dialDirect, DialOptions } from "../../../../js/src/dial";
+import {
+  Credentials,
+  dialDirect,
+  dialWebRTC,
+  DialOptions,
+} from "../../../../js/src/dial";
 import { createPromiseClient, PromiseClient } from "@bufbuild/connect-web";
 import {
   EchoBiDiRequest,
@@ -53,11 +58,6 @@ async function getClients() {
       opts.externalAuthToEntity;
   }
 
-  // console.log("WebRTC")
-  // const webRTCConn = await dialWebRTC(thisHost, webrtcHost, opts);
-  // const webrtcClient = new EchoServiceClient(webrtcHost, { transport: webRTCConn.transportFactory });
-  // await doEchos(webrtcClient);
-
   console.log("Direct"); // bi-di may not work
   const directTransport = await dialDirect(thisHost, opts);
   const directClient = createPromiseClient(
@@ -65,6 +65,14 @@ async function getClients() {
     directTransport({ baseUrl: thisHost })
   );
   await doEchos(directClient);
+
+  console.log("WebRTC");
+  const webRTCConn = await dialWebRTC(thisHost, webrtcHost, opts);
+  const webrtcClient = createPromiseClient(
+    EchoService,
+    webRTCConn.transportFactory({ baseUrl: thisHost })
+  );
+  await doEchos(webrtcClient);
 }
 getClients().catch((e) => {
   console.error("error getting clients", e);
