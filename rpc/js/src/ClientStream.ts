@@ -69,6 +69,8 @@ export class ClientStream extends BaseStream implements Transport {
     header: Headers,
     message: PartialMessage<I>
   ): Promise<UnaryResponse<O>> {
+    console.debug("starting unary call with gRPC over WebRTC transport");
+
     try {
       if (signal && signal.aborted) {
         this.cancel();

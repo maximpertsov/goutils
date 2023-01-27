@@ -270,7 +270,10 @@ export async function dialWebRTC(
   host: string,
   opts?: DialOptions
 ): Promise<WebRTCConnection> {
+  console.debug("dialing WebRTC");
+
   validateDialOptions(opts);
+  console.debug("validated dial options");
 
   const webrtcOpts = opts?.webrtcOptions;
   const { pc, dc } = await newPeerConnectionForClient(
@@ -278,6 +281,7 @@ export async function dialWebRTC(
     webrtcOpts?.rtcConfig
   );
   let successful = false;
+  console.debug("created peer connection");
 
   try {
     // replace auth entity and creds
@@ -310,10 +314,9 @@ export async function dialWebRTC(
     const directTransport = await dialDirect(signalingAddress, optsCopy);
     const signalingClient = createPromiseClient(
       SignalingService,
-      directTransport({
-        baseUrl: signalingAddress,
-      })
+      directTransport({ baseUrl: signalingAddress })
     );
+    console.debug("dialed directly");
 
     let uuid = "";
     // only send once since exchange may end or ICE may end
@@ -370,14 +373,19 @@ export async function dialWebRTC(
       }
     };
 
-    // let pResolve: (value: unknown) => void;
-    let remoteDescSet = new Promise<unknown>((_resolve) => {
-      // pResolve = resolve;
+    // We need to initialize pResolve as an empty function, otherwise the
+    // linter complains that we call pResolve before it is set. In practice,
+    // this should not be the case since it is guaranteed to be set in a
+    // promise.
+    let pResolve: (value: unknown) => void = () => {};
+    let remoteDescSet = new Promise<unknown>((resolve) => {
+      pResolve = resolve;
     });
     let exchangeDone = false;
     if (!webrtcOpts?.disableTrickleICE) {
       // set up offer
       const offerDesc = await pc.createOffer();
+      console.debug("created offer", "type:", offerDesc.type, "sdp:", offerDesc.sdp);
 
       let iceComplete = false;
       pc.onicecandidate = async (event) => {
@@ -417,10 +425,13 @@ export async function dialWebRTC(
       };
 
       await pc.setLocalDescription(offerDesc);
+      console.debug("set local description");
     }
+    console.debug("exchange done");
 
     const cc = new ClientChannel(pc, dc);
     await cc.ready;
+    console.debug("client channel is ready");
 
     let haveInit = false;
     const callRequest = new CallRequest({
@@ -445,8 +456,7 @@ export async function dialWebRTC(
             );
             pc.setRemoteDescription(remoteSDP);
 
-            // TODO: what's this for?
-            // pResolve(true);
+            pResolve(true);
 
             if (webrtcOpts?.disableTrickleICE) {
               exchangeDone = true;
@@ -484,6 +494,8 @@ export async function dialWebRTC(
         throw err;
       }
     }
+
+    console.debug("completed exchange");
 
     exchangeDone = true;
     await sendDone();
