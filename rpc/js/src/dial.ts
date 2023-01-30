@@ -385,7 +385,13 @@ export async function dialWebRTC(
     if (!webrtcOpts?.disableTrickleICE) {
       // set up offer
       const offerDesc = await pc.createOffer();
-      console.debug("created offer", "type:", offerDesc.type, "sdp:", offerDesc.sdp);
+      console.debug(
+        "created offer",
+        "type:",
+        offerDesc.type,
+        "sdp:",
+        offerDesc.sdp
+      );
 
       let iceComplete = false;
       pc.onicecandidate = async (event) => {
@@ -429,8 +435,19 @@ export async function dialWebRTC(
     }
     console.debug("exchange done");
 
+    // let clientEndResolve: () => void;
+    // let clientEndReject: (reason?: unknown) => void;
+    // let clientEnd = new Promise<void>((resolve, reject) => {
+    //   clientEndResolve = resolve;
+    //   clientEndReject = reject;
+    // });
+
     const cc = new ClientChannel(pc, dc);
-    await cc.ready;
+    // cc.ready
+    //   .then(() => clientEndResolve())
+    //   .catch((err) => clientEndReject(err));
+    // await clientEnd;
+    // await cc.ready;
     console.debug("client channel is ready");
 
     let haveInit = false;
@@ -439,9 +456,11 @@ export async function dialWebRTC(
       disableTrickle: webrtcOpts?.disableTrickleICE,
     });
     try {
+      console.debug("ready to call signaling service");
       for await (const response of signalingClient.call(callRequest, {
         headers: { "rpc-host": host },
       })) {
+        console.debug("called signaling service, got response", response);
         switch (response.stage.case) {
           case "init":
             if (haveInit) {
