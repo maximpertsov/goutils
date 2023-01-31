@@ -287,6 +287,7 @@ export class ClientStream extends BaseStream implements Transport {
   public onResponse(resp: Response) {
     switch (resp.type.case) {
       case "headers":
+        console.debug(`got headers: '${resp.type.value!.toJsonString()}'`);
         if (this.headersReceived) {
           this.closeWithRecvError(new Error("headers already received"));
           return;
@@ -298,6 +299,7 @@ export class ClientStream extends BaseStream implements Transport {
         this.processHeaders(resp.type.value!);
         break;
       case "message":
+        console.debug(`got message: '${resp.type.value!.toJsonString()}'`);
         if (!this.headersReceived) {
           this.closeWithRecvError(new Error("headers not yet received"));
           return;
@@ -309,6 +311,7 @@ export class ClientStream extends BaseStream implements Transport {
         this.processMessage(resp.type.value!);
         break;
       case "trailers":
+        console.debug(`got trailers: '${resp.type.value!.toJsonString()}'`);
         this.processTrailers(resp.type.value!);
         break;
       default:
@@ -318,12 +321,14 @@ export class ClientStream extends BaseStream implements Transport {
   }
 
   private processHeaders(headers: ResponseHeaders) {
+    console.debug(`processing headers ${headers}`);
     this.headersReceived = true;
     // this.opts.onHeaders(toGRPCMetadata(headers.metadata), 200);
     this.onHeaders(toGRPCMetadata(headers.metadata), 200);
   }
 
   private processMessage(msg: ResponseMessage) {
+    console.debug(`processing message ${msg}`);
     const result = super.processPacketMessage(msg.packetMessage!);
     if (!result) {
       return;
@@ -336,6 +341,8 @@ export class ClientStream extends BaseStream implements Transport {
   }
 
   private processTrailers(trailers: ResponseTrailers) {
+    console.debug(`processing trailers ${trailers}`);
+
     this.trailersReceived = true;
     const headers = toGRPCMetadata(trailers.metadata);
     let statusCode, statusMessage;
@@ -464,7 +471,7 @@ export function encodeASCII(input: string): Uint8Array {
   for (let i = 0; i !== input.length; ++i) {
     const charCode = input.charCodeAt(i);
     if (!isValidHeaderAscii(charCode)) {
-      throw new Error("Metadata contains invalid ASCII");
+      throw new Error(`Metadata contains invalid ASCII: '${charCode}'`);
     }
     encoded[i] = charCode;
   }

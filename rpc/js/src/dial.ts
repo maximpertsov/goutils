@@ -447,8 +447,6 @@ export async function dialWebRTC(
     //   .then(() => clientEndResolve())
     //   .catch((err) => clientEndReject(err));
     // await clientEnd;
-    // await cc.ready;
-    console.debug("client channel is ready");
 
     let haveInit = false;
     const callRequest = new CallRequest({
@@ -528,6 +526,10 @@ export async function dialWebRTC(
     }
 
     successful = true;
+
+    await cc.ready;
+    console.debug("client channel is ready");
+
     return { transportFactory: cc.transportFactory(), peerConnection: pc };
   } finally {
     if (!successful) {

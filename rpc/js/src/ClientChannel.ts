@@ -69,9 +69,13 @@ export class ClientChannel extends BaseChannel {
   }
 
   private onChannelMessage(event: MessageEvent<any>) {
+    const binary = new Uint8Array(event.data);
+    console.debug(
+      `received channel message data '${new TextDecoder().decode(binary)}'`
+    );
     let resp: Response;
     try {
-      resp = Response.fromBinary(event.data);
+      resp = Response.fromBinary(binary);
     } catch (e) {
       console.error("error deserializing message", e);
       return;

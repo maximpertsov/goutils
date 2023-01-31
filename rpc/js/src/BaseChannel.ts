@@ -61,6 +61,7 @@ export class BaseChannel {
   }
 
   private onChannelOpen() {
+    console.debug("channel open");
     this.pResolve?.(undefined);
   }
 
@@ -74,6 +75,7 @@ export class BaseChannel {
   }
 
   protected write(msg: AnyMessage) {
-    this.dataChannel.send(msg.serializeBinary());
+    console.debug(`writing message to channel '${msg.toJsonString()}'`);
+    this.dataChannel.send(msg.toBinary());
   }
 }
