@@ -1,7 +1,7 @@
 import type { PacketMessage, Stream } from "./gen/proto/rpc/webrtc/v1/grpc_pb";
 import type { GrpcWebTransportOptions } from "@bufbuild/connect-web";
 
-import type { Code } from "@bufbuild/connect-web";
+import { Code } from "@bufbuild/connect-web";
 
 // MaxMessageSize is the maximum size a gRPC message can be.
 let MaxMessageSize = 1 << 25;
@@ -31,21 +31,22 @@ export class BaseStream {
     this.opts = opts;
   }
 
-  public waitUntilComplete(): Promise<void> {
-    const wait = (resolve: () => void) => {
-      console.debug("waiting to complete...");
-      if (this.completed) return resolve();
-      setTimeout(wait, 1000);
-    };
-    return new Promise(function (resolve, _reject) {
-      wait(resolve);
-    });
+  public waitUntilCompleteOrClosed(): void {
+    if (this.completed || this.closed) {
+      console.debug("done!");
+    } else {
+      setTimeout(() => {
+        console.debug("waiting for close or complete...");
+        this.waitUntilCompleteOrClosed();
+      }, 1000);
+    }
   }
 
   public closeWithRecvError(err?: Error) {
     if (this.closed) {
       return;
     }
+    console.log(`closing with error? err: ${err}`);
     this.closed = true;
     this.err = err;
     this.onDone(this.stream.id);
@@ -89,39 +90,49 @@ export class BaseStream {
   // transport options
 
   onEnd(_err?: Error) {
-    // if (this.closed) {
-    //   return;
-    // }
-    //
-    // if (this.responseTrailers === undefined) {
-    //   if (this.responseHeaders === undefined) {
-    //     // The request was unsuccessful - it did not receive any headers
-    //     this.rawOnError(Code.Unknown, "Response closed without headers");
-    //     return;
-    //   }
-    //
-    //   const grpcStatus = this.getStatusFromHeaders(this.responseHeaders);
-    //   const grpcMessage = this.responseHeaders.get("grpc-message");
-    //
-    //   // This was a headers/trailers-only response
-    //
-    //   if (grpcStatus === null) {
-    //     this.rawOnEnd(
-    //       Code.Unknown,
-    //       "Response closed without grpc-status (Headers only)",
-    //       this.responseHeaders
-    //     );
-    //     return;
-    //   }
-    //
-    //   // Return an empty trailers instance
-    //   const statusMessage = this.decodeGRPCStatus(grpcMessage[0]);
-    //   this.rawOnEnd(grpcStatus, statusMessage, this.responseHeaders);
-    //   return;
-    // }
+    console.debug("onEnd");
+    if (this.closed) {
+      console.debug("already closed");
+      return;
+    }
+
+    if (this.responseTrailers === undefined) {
+      if (this.responseHeaders === undefined) {
+        // The request was unsuccessful - it did not receive any headers
+        console.debug(
+          "The request was unsuccessful - it did not receive any headers"
+        );
+        this.rawOnError(Code.Unknown, "Response closed without headers");
+        return;
+      }
+
+      const grpcStatus = this.getStatusFromHeaders(this.responseHeaders);
+      const grpcMessage = this.responseHeaders.get("grpc-message");
+
+      // This was a headers/trailers-only response
+
+      if (grpcStatus === null) {
+        console.debug("Response closed without grpc-status (Headers only)");
+        this.rawOnEnd(
+          Code.Unknown,
+          "Response closed without grpc-status (Headers only)",
+          this.responseHeaders
+        );
+        return;
+      }
+
+      // Return an empty trailers instance
+      if (!grpcMessage || !grpcMessage[0]) {
+        throw new Error("first element should not be null!");
+      }
+      const statusMessage = this.decodeGRPCStatus(grpcMessage[0]);
+      this.rawOnEnd(grpcStatus, statusMessage, this.responseHeaders);
+      return;
+    }
   }
 
   rawOnEnd(_code: Code, _message: string, _trailers: Headers) {
+    console.debug("rawOnEnd");
     if (this.completed) return;
     this.completed = true;
 

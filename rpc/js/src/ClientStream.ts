@@ -81,7 +81,7 @@ export class ClientStream extends BaseStream implements Transport {
         message instanceof method.I ? message : new method.I(message)
       );
       this.finishSend(method);
-      await this.waitUntilComplete();
+      this.waitUntilCompleteOrClosed();
 
       if (!this.responseHeaders) {
         throw connectErrorFromReason("no response headers", Code.Internal);
@@ -94,6 +94,8 @@ export class ClientStream extends BaseStream implements Transport {
       if (!this.responseTrailers) {
         throw connectErrorFromReason("no response trailers", Code.Internal);
       }
+
+      console.debug(`response message: ${this.responseMessage}`);
 
       return {
         stream: false as const,
@@ -395,12 +397,17 @@ export class ClientStream extends BaseStream implements Transport {
   // transport options
 
   onHeaders(headers: Headers, status: number) {
+    console.debug(`on headers`);
     if (this.closed) {
+      console.debug(`channel already closed. exiting`);
       return;
     }
 
     if (status === 0) {
       // The request has failed due to connectivity issues. Do not capture the headers
+      console.debug(
+        `The request has failed due to connectivity issues. Do not capture the headers`
+      );
     } else {
       this.responseHeaders = headers;
 

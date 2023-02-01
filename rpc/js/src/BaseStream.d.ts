@@ -1,6 +1,6 @@
 import type { PacketMessage, Stream } from "./gen/proto/rpc/webrtc/v1/grpc_pb";
 import type { GrpcWebTransportOptions } from "@bufbuild/connect-web";
-import type { Code } from "@bufbuild/connect-web";
+import { Code } from "@bufbuild/connect-web";
 export declare class BaseStream {
     protected readonly stream: Stream;
     private readonly onDone;
@@ -13,7 +13,7 @@ export declare class BaseStream {
     protected responseHeaders?: Headers;
     protected responseTrailers?: Headers;
     constructor(stream: Stream, onDone: (id: bigint) => void, opts: GrpcWebTransportOptions);
-    waitUntilComplete(): Promise<void>;
+    waitUntilCompleteOrClosed(): void;
     closeWithRecvError(err?: Error): void;
     protected processPacketMessage(msg: PacketMessage): Uint8Array | undefined;
     onEnd(_err?: Error): void;
