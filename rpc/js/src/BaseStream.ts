@@ -31,16 +31,30 @@ export class BaseStream {
     this.opts = opts;
   }
 
-  public waitUntilCompleteOrClosed(): void {
-    if (this.completed || this.closed) {
-      console.debug("done!");
-    } else {
-      setTimeout(() => {
-        console.debug("waiting for close or complete...");
-        this.waitUntilCompleteOrClosed();
-      }, 1000);
+  public async waitUntilComplete(): Promise<void> {
+    console.debug("waiting to complete...");
+    while (!this.completed && !this.closed) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
     }
+    console.debug("done!");
   }
+
+  // public waitUntilComplete(): Promise<void> {
+  //   return new Promise(wait.bind(this));
+  //
+  //   function wait(resolve: () => void, _reject: any) {
+  //     console.debug("waiting to complete...");
+  //
+  //     // @ts-ignore
+  //     if (this.completed || this.closed) {
+  //       console.debug("done!");
+  //       resolve();
+  //     } else {
+  //       // @ts-ignore
+  //       wait.bind(this, resolve, _reject);
+  //     }
+  //   }
+  // }
 
   public closeWithRecvError(err?: Error) {
     if (this.closed) {

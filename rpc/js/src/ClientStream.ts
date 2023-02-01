@@ -72,17 +72,17 @@ export class ClientStream extends BaseStream implements Transport {
   ): Promise<UnaryResponse<O>> {
     console.debug("starting unary call with gRPC over WebRTC transport");
 
-    try {
-      if (signal && signal.aborted) {
-        this.cancel();
-      }
-      this.start(header, service, method);
-      this.sendMessage(
-        message instanceof method.I ? message : new method.I(message)
-      );
-      this.finishSend(method);
-      this.waitUntilCompleteOrClosed();
+    if (signal && signal.aborted) {
+      this.cancel();
+    }
+    this.start(header, service, method);
+    this.sendMessage(
+      message instanceof method.I ? message : new method.I(message)
+    );
+    this.finishSend(method);
+    await this.waitUntilComplete();
 
+    try {
       if (!this.responseHeaders) {
         throw connectErrorFromReason("no response headers", Code.Internal);
       }
@@ -397,7 +397,7 @@ export class ClientStream extends BaseStream implements Transport {
   // transport options
 
   onHeaders(headers: Headers, status: number) {
-    console.debug(`on headers`);
+    console.debug(`on headers for ${headers}`);
     if (this.closed) {
       console.debug(`channel already closed. exiting`);
       return;
@@ -410,6 +410,7 @@ export class ClientStream extends BaseStream implements Transport {
       );
     } else {
       this.responseHeaders = headers;
+      console.debug(`set headers ${this.responseHeaders}`);
 
       const gRPCStatus = this.getStatusFromHeaders(headers);
 

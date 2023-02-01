@@ -13,7 +13,7 @@ export declare class BaseStream {
     protected responseHeaders?: Headers;
     protected responseTrailers?: Headers;
     constructor(stream: Stream, onDone: (id: bigint) => void, opts: GrpcWebTransportOptions);
-    waitUntilCompleteOrClosed(): void;
+    waitUntilComplete(): Promise<void>;
     closeWithRecvError(err?: Error): void;
     protected processPacketMessage(msg: PacketMessage): Uint8Array | undefined;
     onEnd(_err?: Error): void;
