@@ -32,10 +32,10 @@ export class BaseStream {
   }
 
   public waitUntilComplete(): Promise<void> {
-    // TODO: give up after eventually?
     const wait = (resolve: () => void) => {
+      console.debug("waiting to complete...");
       if (this.completed) return resolve();
-      setTimeout(wait, 30);
+      setTimeout(wait, 1000);
     };
     return new Promise(function (resolve, _reject) {
       wait(resolve);

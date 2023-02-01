@@ -1,3 +1,4 @@
+// import { decodeBinaryHeader } from "@bufbuild/connect-web";
 import type { AnyMessage } from "@bufbuild/protobuf";
 import { ConnectionClosedError } from "./errors";
 

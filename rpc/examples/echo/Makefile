@@ -4,7 +4,7 @@ all: build
 
 build:
 	export NODE_OPTIONS=--openssl-legacy-provider && node --version 2>/dev/null || unset NODE_OPTIONS;\
-	cd frontend && npm ci --audit=false && npx webpack
+	cd frontend && npm install && npx webpack
 
 run-server: build
 	go run server/cmd/main.go -instance-name=echo-server

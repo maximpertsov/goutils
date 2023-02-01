@@ -7,6 +7,7 @@ import type {
 } from "@bufbuild/connect-web";
 import {
   connectErrorFromReason,
+  // encodeBinaryHeader,
   runServerStream,
   Code,
 } from "@bufbuild/connect-web";
@@ -204,10 +205,9 @@ export class ClientStream extends BaseStream implements Transport {
   }
 
   public sendMessage<I extends Message<I>>(message: I) {
-    // TODO: skip frame header bytes?
     const msgBytes = message.toBinary();
-    // TODO: Do we need to slice the message here?
-    this.writeMessage(false, msgBytes.slice(5));
+    console.debug(`sending message: '${new TextDecoder().decode(msgBytes)}'`);
+    this.writeMessage(false, msgBytes);
   }
 
   // public sendMessage(msgBytes?: Uint8Array) {
@@ -249,8 +249,15 @@ export class ClientStream extends BaseStream implements Transport {
   }
 
   private writeMessage(eos: boolean, msgBytes?: Uint8Array) {
+    console.debug(
+      `preparing message before writing to channel: '${new TextDecoder().decode(
+        msgBytes
+      )}'`
+    );
     try {
       if (!msgBytes || msgBytes.length === 0) {
+        console.debug("zero-length message?");
+
         const packet = new PacketMessage();
         packet.eom = true;
         const requestMessage = new RequestMessage();
@@ -262,14 +269,23 @@ export class ClientStream extends BaseStream implements Transport {
       }
 
       while (msgBytes.length !== 0) {
+        console.debug("nonzero-length message!");
+
         const amountToSend = Math.min(
           msgBytes.length,
           maxRequestMessagePacketDataSize
         );
+
         const packet = new PacketMessage();
         packet.data = msgBytes.slice(0, amountToSend);
+        console.debug(
+          `sending chunk: '${new TextDecoder().decode(packet.data)}'`
+        );
         msgBytes = msgBytes.slice(amountToSend);
+        console.debug(`left to send: '${new TextDecoder().decode(msgBytes)}'`);
+
         if (msgBytes.length === 0) {
+          console.debug("reached end of message");
           packet.eom = true;
         }
         const requestMessage = new RequestMessage();
@@ -526,6 +542,7 @@ const toGRPCMetadata = (metadata?: Metadata): Headers => {
   }
   Object.entries(metadata.md).forEach(([key, strings]) => {
     strings.values.forEach((value: string) => {
+      // result.set(`${key}-Bin`, encodeBinaryHeader(value));
       result.set(key, value);
     });
   });
