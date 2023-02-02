@@ -91,9 +91,9 @@ export class ClientStream extends BaseStream implements Transport {
         throw connectErrorFromReason("no response message", Code.Internal);
       }
 
-      if (!this.responseTrailers) {
-        throw connectErrorFromReason("no response trailers", Code.Internal);
-      }
+      // if (!this.responseTrailers) {
+      //   throw connectErrorFromReason("no response trailers", Code.Internal);
+      // }
 
       console.debug(`response message: ${this.responseMessage}`);
 
@@ -103,7 +103,8 @@ export class ClientStream extends BaseStream implements Transport {
         method: method,
         header: this.responseHeaders,
         message: method.O.fromBinary(this.responseMessage),
-        trailer: this.responseTrailers,
+        // trailer: this.responseTrailers ?? new Headers(),
+        trailer: new Headers(),
       };
 
       // const request: UnaryRequest = {
