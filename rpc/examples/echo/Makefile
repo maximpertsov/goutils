@@ -7,7 +7,7 @@ build:
 	cd frontend && npm install && npx webpack
 
 run-server: build
-	go run server/cmd/main.go -instance-name=echo-server
+	go run server/cmd/main.go -instance-name=localhost:8080
 
 run-client:
 	go run client/main.go -host=echo-server

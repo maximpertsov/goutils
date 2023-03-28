@@ -114,6 +114,9 @@ func (srv *WebRTCSignalingServer) validateHosts(hosts ...string) error {
 	if len(hosts) == 0 {
 		return errors.New("at least one host required")
 	}
+
+	srv.logger.Debugw("valid hosts", "hosts", hosts, "forHosts", srv.forHosts)
+
 	for _, host := range hosts {
 		if _, ok := srv.forHosts[host]; ok {
 			continue
