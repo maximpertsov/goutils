@@ -115,6 +115,7 @@ func dial(
 	)
 
 	if !dOpts.mdnsOptions.Disable && tryLocal && isJustDomain {
+		logger.Debug("trying dns")
 		conn, cached, err := dialMulticastDNS(ctx, address, logger, dOpts)
 		if err != nil {
 			logger.Warnw("error dialing with mDNS; falling back to other methods", "error", err)
@@ -123,6 +124,7 @@ func dial(
 		if conn != nil {
 			return conn, cached, err
 		}
+		logger.Debug("unable to connect with mdns")
 	}
 
 	if !dOpts.webrtcOpts.Disable {
@@ -235,6 +237,7 @@ func dialMulticastDNS(
 	}
 	// lookup for candidates for backward compatibility
 	entry, err := candidateLookup(ctx, candidates)
+	logger.Debugw("candidate lookup results", "entry", entry, "error", err)
 	if err != nil || entry == nil {
 		return nil, false, err
 	}
@@ -251,6 +254,7 @@ func dialMulticastDNS(
 
 	// IPv6 with scope does not work with grpc-go which we would want here.
 	if !(hasGRPC || hasWebRTC) || len(entry.AddrIPv4) == 0 {
+		logger.Debug("ipv6 scope does not work")
 		return nil, false, nil
 	}
 
@@ -300,6 +304,7 @@ func dialMulticastDNS(
 		} else if dOptsCopy.debug {
 			logger.Debugw("connected via mDNS (cached)", "address", localAddress)
 		}
+		logger.Debug("connected via mDNS?")
 		return conn, cached, nil
 	}
 	return nil, false, err
