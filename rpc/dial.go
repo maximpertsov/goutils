@@ -107,6 +107,13 @@ func dial(
 		}
 	}
 
+	logger.Debugw(
+		"mdns checks",
+		"disabled?", dOpts.mdnsOptions.Disable,
+		"try local?", tryLocal,
+		"is just domain?", isJustDomain,
+	)
+
 	if !dOpts.mdnsOptions.Disable && tryLocal && isJustDomain {
 		conn, cached, err := dialMulticastDNS(ctx, address, logger, dOpts)
 		if err != nil {
