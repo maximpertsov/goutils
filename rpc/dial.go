@@ -212,7 +212,8 @@ func dialMulticastDNS(
 	logger golog.Logger,
 	dOpts *dialOptions,
 ) (ClientConn, bool, error) {
-	candidates := []string{address, strings.ReplaceAll(address, ".", "-")}
+	// candidates := []string{address, strings.ReplaceAll(address, ".", "-")}
+	candidates := []string{address}
 	candidateLookup := func(ctx context.Context, candidates []string) (*zeroconf.ServiceEntry, error) {
 		logger.Debugw("looking up candidates", "candidates", candidates)
 		resolver, err := zeroconf.NewResolver(logger, zeroconf.SelectIPRecordType(zeroconf.IPv4))
@@ -225,13 +226,18 @@ func dialMulticastDNS(
 			entries := make(chan *zeroconf.ServiceEntry)
 			lookupCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
 			defer cancel()
+			// browse result example
+			// {"entry": {"name":"rdk:8080","type":"_rpc._tcp","subtypes":null,"domain":"local.","hostname":"mp-20xw003jus.local.","port":40503,"text":["grpc","webrtc"],"ttl":3200}, "error": null}
 			if err := resolver.Lookup(lookupCtx, candidate, "_rpc._tcp", "local.", entries); err != nil {
+			// if err := resolver.Lookup(lookupCtx, "rdk:8080", "_rpc._tcp", "local.", entries); err != nil {
+				// if err := resolver.Browse(lookupCtx, "_rpc._tcp", "local.", entries); err != nil {
 				logger.Errorw("error performing mDNS query", "error", err)
 				return nil, err
 			}
 			// entries gets closed after lookupCtx expires or there is a real entry
 			entry := <-entries
 			if entry != nil {
+				logger.Debugw("Got entry", "entry", entry)
 				return entry, nil
 			}
 		}
@@ -304,8 +310,15 @@ func dialMulticastDNS(
 	tlsConfig.ServerName = address
 	dOptsCopy.tlsConfig = tlsConfig
 
+	logger.Debugw(
+		"gonna dial...",
+		"local address", localAddress,
+		"address", address,
+	)
+
 	conn, cached, err := dial(ctx, localAddress, address, logger, &dOptsCopy, false)
 	if err == nil {
+		logger.Debug("dialed successfully!")
 		if !cached {
 			logger.Debugw("connected via mDNS", "address", localAddress)
 		} else if dOptsCopy.debug {
@@ -314,6 +327,7 @@ func dialMulticastDNS(
 		logger.Debug("connected via mDNS?")
 		return conn, cached, nil
 	}
+	logger.Debugw("error dialing", "error", err)
 	return nil, false, err
 }
 
