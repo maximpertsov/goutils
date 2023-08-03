@@ -214,12 +214,14 @@ func dialMulticastDNS(
 ) (ClientConn, bool, error) {
 	candidates := []string{address, strings.ReplaceAll(address, ".", "-")}
 	candidateLookup := func(ctx context.Context, candidates []string) (*zeroconf.ServiceEntry, error) {
+		logger.Debugw("looking up candidates", "candidates", candidates)
 		resolver, err := zeroconf.NewResolver(logger, zeroconf.SelectIPRecordType(zeroconf.IPv4))
 		if err != nil {
 			return nil, err
 		}
 		defer resolver.Shutdown()
 		for _, candidate := range candidates {
+			logger.Debugw("inspecting candidate", "candidate", candidate)
 			entries := make(chan *zeroconf.ServiceEntry)
 			lookupCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
 			defer cancel()
@@ -239,6 +241,11 @@ func dialMulticastDNS(
 	entry, err := candidateLookup(ctx, candidates)
 	logger.Debugw("candidate lookup results", "entry", entry, "error", err)
 	if err != nil || entry == nil {
+		logger.Debugw(
+			"error finding candidate or entry was nil",
+			"is error", err != nil,
+			"entry nil", entry == nil,
+		)
 		return nil, false, err
 	}
 	var hasGRPC, hasWebRTC bool
