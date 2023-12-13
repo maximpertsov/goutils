@@ -70,6 +70,7 @@ func (c JWTClaims) Metadata() map[string]string {
 var _ Claims = JWTClaims{}
 
 func (ss *simpleServer) Authenticate(ctx context.Context, req *rpcpb.AuthenticateRequest) (*rpcpb.AuthenticateResponse, error) {
+	ss.logger.Info("=== Authenticate ===")
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
 		return nil, errors.New("expected metadata")
@@ -88,6 +89,7 @@ func (ss *simpleServer) Authenticate(ctx context.Context, req *rpcpb.Authenticat
 	if handlers.AuthHandler == nil {
 		return nil, status.Errorf(codes.Unimplemented, "direct authentication not supported for %q", forType)
 	}
+	ss.logger.Infow("Authn with credentials", "payload", req.Credentials.Payload)
 	authMD, err := handlers.AuthHandler.Authenticate(ctx, req.Entity, req.Credentials.Payload)
 	if err != nil {
 		if _, ok := status.FromError(err); ok {
@@ -102,6 +104,7 @@ func (ss *simpleServer) Authenticate(ctx context.Context, req *rpcpb.Authenticat
 	if err != nil {
 		return nil, err
 	}
+	ss.logger.Infow("Got an access token", "token", token)
 
 	return &rpcpb.AuthenticateResponse{
 		AccessToken: token,
@@ -109,6 +112,7 @@ func (ss *simpleServer) Authenticate(ctx context.Context, req *rpcpb.Authenticat
 }
 
 func (ss *simpleServer) AuthenticateTo(ctx context.Context, req *rpcpb.AuthenticateToRequest) (*rpcpb.AuthenticateToResponse, error) {
+	ss.logger.Info("=== AuthenticateTo ===")
 	// Use the entity from the original authenticated call/payload.
 	entity, ok := ContextAuthEntity(ctx)
 	if !ok {
@@ -130,22 +134,26 @@ func (ss *simpleServer) AuthenticateTo(ctx context.Context, req *rpcpb.Authentic
 	}, nil
 }
 
+const accessTTL = 15 * time.Second
+
 func (ss *simpleServer) signAccessTokenForEntity(
 	forType CredentialsType,
 	audience []string,
 	entity string,
 	authMD map[string]string,
 ) (string, error) {
-	// TODO(GOUT-13): expiration
+	issuedAt := time.Now()
+	expiresAt := issuedAt.Add(accessTTL)
 	// TODO(GOUT-12): refresh token
 	// TODO(GOUT-9): more complete info
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, JWTClaims{
 		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:  entity,
-			Audience: audience,
-			Issuer:   ss.authIssuer,
-			IssuedAt: jwt.NewNumericDate(time.Now()),
-			ID:       uuid.NewString(),
+			Subject:   entity,
+			Audience:  audience,
+			Issuer:    ss.authIssuer,
+			IssuedAt:  jwt.NewNumericDate(issuedAt),
+			ExpiresAt: jwt.NewNumericDate(expiresAt),
+			ID:        uuid.NewString(),
 		},
 		AuthCredentialsType: forType,
 		AuthMetadata:        authMD,
@@ -368,8 +376,10 @@ func (ss *simpleServer) ensureAuthed(ctx context.Context) (context.Context, erro
 
 	err = claims.Valid()
 	if err != nil {
+		ss.logger.Info("invalid claims!!!")
 		return nil, status.Errorf(codes.Unauthenticated, "unauthenticated: %s", err)
 	}
+	ss.logger.Info("claims are still valid")
 
 	claimsEntity := claims.Entity()
 	if claimsEntity == "" {
