@@ -388,5 +388,6 @@ func dialWebRTC(
 		return nil, err
 	}
 	successful = true
+	logger.Info("Dialed channel successfully", *clientCh)
 	return clientCh, nil
 }

@@ -46,6 +46,7 @@ type serviceInfo struct {
 
 // newWebRTCServer makes a new server with no registered services.
 func newWebRTCServer(logger golog.Logger) *webrtcServer {
+	// TODO: add auth interceptors
 	return newWebRTCServerWithInterceptors(logger, nil, nil)
 }
 
