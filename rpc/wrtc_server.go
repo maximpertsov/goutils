@@ -2,14 +2,22 @@ package rpc
 
 import (
 	"context"
+	"crypto/rsa"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
 	"sync"
 
 	"github.com/edaniels/golog"
+	"github.com/golang-jwt/jwt/v4"
 	"github.com/pion/webrtc/v3"
+	"go.uber.org/multierr"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/peer"
+	"google.golang.org/grpc/status"
 )
 
 // DefaultWebRTCMaxGRPCCalls is the maximum number of concurrent gRPC calls to allow
@@ -35,6 +43,28 @@ type webrtcServer struct {
 
 	onPeerAdded   func(pc *webrtc.PeerConnection)
 	onPeerRemoved func(pc *webrtc.PeerConnection)
+
+	// exempt methods do not perform any auth
+	exemptMethods map[string]bool
+	// public methods attempt, but do not require, authentication
+	publicMethods map[string]bool
+
+	// auth
+
+	internalUUID         string
+	internalCreds        Credentials
+	tlsAuthHandler       func(ctx context.Context, entities ...string) error
+	authRSAPrivKey       *rsa.PrivateKey
+	authRSAPrivKeyKID    string
+	authHandlersForCreds map[CredentialsType]credAuthHandlers
+	authToHandler        AuthenticateToHandler
+
+	// authAudience is the JWT audience (aud) that will be used/expected
+	// for our service.
+	authAudience []string
+
+	// authIssuer is the JWT issuer (iss) that will be used for our service.
+	authIssuer string
 }
 
 // from grpc.
@@ -48,6 +78,171 @@ type serviceInfo struct {
 func newWebRTCServer(logger golog.Logger) *webrtcServer {
 	// TODO: add auth interceptors
 	return newWebRTCServerWithInterceptors(logger, nil, nil)
+}
+
+func (srv *webrtcServer) isPublicMethod(
+	fullMethod string,
+) bool {
+	return srv.publicMethods[fullMethod]
+}
+
+// tryAuth is called for public methods where auth is not required but preferable.
+func (srv *webrtcServer) tryAuth(ctx context.Context) (context.Context, error) {
+	nextCtx, err := srv.ensureAuthed(ctx)
+	if err != nil {
+		if status, _ := status.FromError(err); status.Code() != codes.Unauthenticated {
+			return nil, err
+		}
+		return ctx, nil
+	}
+	return nextCtx, nil
+}
+
+func (srv *webrtcServer) authHandlers(forType CredentialsType) (credAuthHandlers, error) {
+	handler, ok := srv.authHandlersForCreds[forType]
+	if !ok {
+		return credAuthHandlers{}, status.Errorf(codes.InvalidArgument, "do not know how to handle credential type %q", forType)
+	}
+	return handler, nil
+}
+
+func (srv *webrtcServer) ensureAuthed(ctx context.Context) (context.Context, error) {
+	tokenString, err := tokenFromContext(ctx)
+	if err != nil {
+		// check TLS state
+		if srv.tlsAuthHandler == nil {
+			return nil, err
+		}
+		var verifiedCert *x509.Certificate
+		if p, ok := peer.FromContext(ctx); ok && p.AuthInfo != nil {
+			if authInfo, ok := p.AuthInfo.(credentials.TLSInfo); ok {
+				verifiedChains := authInfo.State.VerifiedChains
+				if len(verifiedChains) != 0 && len(verifiedChains[0]) != 0 {
+					verifiedCert = verifiedChains[0][0]
+				}
+			}
+		}
+		if verifiedCert == nil {
+			return nil, err
+		}
+		if tlsErr := srv.tlsAuthHandler(ctx, verifiedCert.DNSNames...); tlsErr == nil {
+			// mTLS based authentication contexts do not really have a sense of a unique identifier
+			// when considering multiple clients using the certificate. We deem this okay but it does
+			// mean that if the identifier is used to bind to the concept of a unique session, it is
+			// not sufficient without another piece of information (like an address and port).
+			// Furthermore, if TLS certificate verification is disabled, this trust is lost.
+			// Our best chance at uniqueness with a compliant CA is to use the issuer DN (Distinguished Name)
+			// along with the serial number; compliancy hinges on issuing unique serial numbers and if this
+			// is an intermediate CA, their parent issuing unique DNs.
+			nextCtx := ContextWithAuthEntity(ctx, EntityInfo{
+				Entity: verifiedCert.Issuer.String() + ":" + verifiedCert.SerialNumber.String(),
+			})
+			return nextCtx, nil
+		} else if !errors.Is(tlsErr, errNotTLSAuthed) {
+			return nil, multierr.Combine(err, tlsErr)
+		}
+		return nil, err
+	}
+
+	var claims JWTClaims
+	var handlers credAuthHandlers
+	if _, err := jwt.ParseWithClaims(
+		tokenString,
+		&claims,
+		func(token *jwt.Token) (interface{}, error) {
+			var err error
+			handlers, err = srv.authHandlers(claims.CredentialsType())
+			if err != nil {
+				return nil, err
+			}
+
+			if handlers.TokenVerificationKeyProvider != nil {
+				return handlers.TokenVerificationKeyProvider.TokenVerificationKey(ctx, token)
+			}
+
+			// signed internally
+			if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
+				return nil, fmt.Errorf("unexpected signing method %q", token.Method.Alg())
+			}
+
+			return &srv.authRSAPrivKey.PublicKey, nil
+		},
+		jwt.WithValidMethods(validSigningMethods),
+	); err != nil {
+		return nil, status.Errorf(codes.Unauthenticated, "unauthenticated: %s", err)
+	}
+
+	// Audience verification is critical for security. Without it, we have a higher chance
+	// of validating a JWT is valid, but not that it is intended for us. Of course, that means
+	// we trust whomever owns the private keys to signing access tokens.
+	audVerified := false
+	for _, allowdAud := range srv.authAudience {
+		if claims.RegisteredClaims.VerifyAudience(allowdAud, true) {
+			audVerified = true
+			break
+		}
+	}
+	if !audVerified {
+		return nil, status.Error(codes.Unauthenticated, "invalid audience")
+	}
+
+	// Note(erd): may want to verify issuers in the future where the claims/scope are
+	// treated differently if it comes down to permissions encoded in a JWT.
+
+	err = claims.Valid()
+	if err != nil {
+		srv.logger.Info("invalid claims!!!")
+		return nil, status.Errorf(codes.Unauthenticated, "unauthenticated: %s", err)
+	}
+	srv.logger.Info("claims are still valid")
+
+	claimsEntity := claims.Entity()
+	if claimsEntity == "" {
+		return nil, status.Errorf(codes.Unauthenticated, "expected entity (sub) in claims")
+	}
+
+	var entityData interface{}
+	if handlers.EntityDataLoader != nil {
+		data, err := handlers.EntityDataLoader.EntityData(ctx, claims)
+		if err != nil {
+			if _, ok := status.FromError(err); ok {
+				return nil, err
+			}
+			return nil, status.Errorf(codes.Internal, "failed to load entity data: %s", err)
+		}
+		entityData = data
+	}
+
+	return ContextWithAuthEntity(ctx, EntityInfo{claimsEntity, entityData}), nil
+}
+
+func (srv *webrtcServer) authUnaryInterceptor(
+	ctx context.Context,
+	req interface{},
+	info *grpc.UnaryServerInfo,
+	handler grpc.UnaryHandler,
+) (interface{}, error) {
+	// no auth
+	if srv.exemptMethods[info.FullMethod] {
+		return handler(ctx, req)
+	}
+
+	// optional auth
+	if srv.isPublicMethod(info.FullMethod) {
+		nextCtx, err := srv.tryAuth(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return handler(nextCtx, req)
+	}
+
+	// private auth
+	nextCtx, err := srv.ensureAuthed(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return handler(nextCtx, req)
 }
 
 // newWebRTCServerWithInterceptors makes a new server with no registered services that will
