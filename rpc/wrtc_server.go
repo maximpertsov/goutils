@@ -273,6 +273,8 @@ func newWebRTCServerWithInterceptorsAndUnknownStreamHandler(
 		streamInt:         streamInt,
 		unknownStreamDesc: unknownStreamDesc,
 	}
+	// TODO: chain to existing?
+	srv.unaryInt = srv.authUnaryInterceptor
 	srv.ctx, srv.cancel = context.WithCancel(context.Background())
 	return srv
 }
